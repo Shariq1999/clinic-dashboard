@@ -9,6 +9,7 @@ import {
   DialysisSlotType,
   BranchId,
 } from '../types/schema';
+import { triggerAutoSync } from '../db/cloudSync';
 import {
   parseISO,
   format,
@@ -33,16 +34,18 @@ import {
 export const Dialysis: React.FC = () => {
   const { branchId, setBranchId } = useAppStore();
 
-  // If ALL branches selected globally, default to Dar ul Shifa for slot-level matrix
-  const activeBranchId: BranchId =
-    branchId === 'ALL' ? 'br_dar_ul_shifa' : (branchId as BranchId);
-
   // Month navigation state
   const [currentMonthDate, setCurrentMonthDate] = useState<Date>(new Date('2026-04-01T00:00:00'));
 
   // Live data
   const branches = useLiveQuery(() => db.branches.toArray(), []);
   const capacityLogs = useLiveQuery(() => db.capacityLogs.toArray(), []);
+
+  // If ALL branches selected globally, default to first available branch
+  const activeBranchId: BranchId =
+    branchId === 'ALL'
+      ? (branches && branches.length > 0 ? branches[0].id : 'br_dar_ul_shifa')
+      : (branchId as BranchId);
   const slots = useLiveQuery(
     () =>
       db.dialysisSlots
@@ -140,6 +143,7 @@ export const Dialysis: React.FC = () => {
 
     await db.dialysisSlots.put(slotRecord);
     await db.meta.put({ key: 'isEdited', value: true });
+    triggerAutoSync();
   };
 
   return (
@@ -154,10 +158,13 @@ export const Dialysis: React.FC = () => {
           <select
             value={activeBranchId}
             onChange={(e) => setBranchId(e.target.value)}
-            className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500"
+            className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 cursor-pointer"
           >
-            <option value="br_dar_ul_shifa">🏥 Dar ul Shifa (DUS)</option>
-            <option value="br_saifee_diag">🔬 Saifee Diagnostics Center (SDC)</option>
+            {branches?.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name} ({b.code})
+              </option>
+            ))}
           </select>
           <span className="text-xs text-slate-400">
             Active Baseline: {monthCapacityInfo.machineCount} Machines × {monthCapacityInfo.slotsPerMachine} Shifts/day

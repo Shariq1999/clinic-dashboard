@@ -4,6 +4,7 @@ import { db } from '../db/database';
 import { useAppStore } from '../store/useAppStore';
 import {
   computePeriodMetrics,
+  computeDepartmentProfitability,
   getPreviousPeriodContext,
   calcDeltaPct,
 } from '../engine/financialEngine';
@@ -14,6 +15,8 @@ import { CostBreakdownDonut } from '../components/charts/CostBreakdownDonut';
 import { OccupancyTrendLine } from '../components/charts/OccupancyTrendLine';
 import { FootfallByDeptBar } from '../components/charts/FootfallByDeptBar';
 import { ProfitWaterfallChart } from '../components/charts/ProfitWaterfallChart';
+import { DepartmentProfitabilityBar } from '../components/charts/DepartmentProfitabilityBar';
+import { DEPARTMENT_NAMES } from '../types/schema';
 import {
   IndianRupee,
   Coins,
@@ -22,8 +25,9 @@ import {
   Activity,
   Users,
   Building,
+  Stethoscope,
 } from 'lucide-react';
-import { eachWeekOfInterval, parseISO, format, endOfWeek, min, max, getDay } from 'date-fns';
+import { eachWeekOfInterval, eachMonthOfInterval, parseISO, format, endOfWeek, min, max, getDay } from 'date-fns';
 
 export const Dashboard: React.FC = () => {
   const { branchId, startDate, endDate, department } = useAppStore();
@@ -34,6 +38,7 @@ export const Dashboard: React.FC = () => {
   const dialysisSlots = useLiveQuery(() => db.dialysisSlots.toArray(), []);
   const dailyEntries = useLiveQuery(() => db.dailyEntries.toArray(), []);
   const monthlyCosts = useLiveQuery(() => db.monthlyCosts.toArray(), []);
+  const departmentCosts = useLiveQuery(() => db.departmentCosts.toArray(), []);
   const serviceCatalog = useLiveQuery(() => db.serviceCatalog.toArray(), []);
   const rateOverrides = useLiveQuery(() => db.rateOverrides.toArray(), []);
 
@@ -46,7 +51,7 @@ export const Dashboard: React.FC = () => {
     serviceCatalog &&
     rateOverrides;
 
-  // 1. Current Period Metrics
+  // 1. Current Period Metrics (with Department Scoping)
   const currentMetrics = useMemo(() => {
     if (!isReady) return null;
     return computePeriodMetrics(
@@ -57,9 +62,10 @@ export const Dashboard: React.FC = () => {
       dailyEntries,
       monthlyCosts,
       serviceCatalog,
-      rateOverrides
+      rateOverrides,
+      departmentCosts || []
     );
-  }, [isReady, branchId, startDate, endDate, department, branches, capacityLogs, dialysisSlots, dailyEntries, monthlyCosts, serviceCatalog, rateOverrides]);
+  }, [isReady, branchId, startDate, endDate, department, branches, capacityLogs, dialysisSlots, dailyEntries, monthlyCosts, departmentCosts, serviceCatalog, rateOverrides]);
 
   // 2. Previous Period Metrics for Delta %
   const prevMetrics = useMemo(() => {
@@ -73,14 +79,43 @@ export const Dashboard: React.FC = () => {
       dailyEntries,
       monthlyCosts,
       serviceCatalog,
+      rateOverrides,
+      departmentCosts || []
+    );
+  }, [isReady, branchId, startDate, endDate, department, branches, capacityLogs, dialysisSlots, dailyEntries, monthlyCosts, departmentCosts, serviceCatalog, rateOverrides]);
+
+  // 2B. Department-Wise Profitability Engine Metrics
+  const deptProfitabilityMetrics = useMemo(() => {
+    if (!isReady) return [];
+    return computeDepartmentProfitability(
+      { branchId, startDate, endDate, department },
+      branches,
+      capacityLogs,
+      dialysisSlots,
+      dailyEntries,
+      departmentCosts || [],
+      monthlyCosts,
+      serviceCatalog,
       rateOverrides
     );
-  }, [isReady, branchId, startDate, endDate, department, branches, capacityLogs, dialysisSlots, dailyEntries, monthlyCosts, serviceCatalog, rateOverrides]);
+  }, [isReady, branchId, startDate, endDate, department, branches, capacityLogs, dialysisSlots, dailyEntries, departmentCosts, monthlyCosts, serviceCatalog, rateOverrides]);
+
+  // Dynamic month list derived from the active date interval
+  const dynamicMonths = useMemo(() => {
+    try {
+      const start = parseISO(startDate);
+      const end = parseISO(endDate);
+      const monthList = eachMonthOfInterval({ start, end });
+      return monthList.map((d) => format(d, 'yyyy-MM'));
+    } catch {
+      return ['2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09'];
+    }
+  }, [startDate, endDate]);
 
   // 3. Monthly Revenue Stacked Bar Data
   const monthlyRevenueData = useMemo(() => {
     if (!isReady) return [];
-    const months = ['2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09'];
+    const months = dynamicMonths.length > 0 ? dynamicMonths : ['2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09'];
     const activeBranchIds = new Set(
       branchId === 'ALL' ? branches.map((b) => b.id) : [branchId]
     );
@@ -117,7 +152,7 @@ export const Dashboard: React.FC = () => {
         consultation: sumDept('CONSULTATION'),
       };
     });
-  }, [isReady, branches, branchId, dialysisSlots, dailyEntries]);
+  }, [isReady, branches, branchId, dialysisSlots, dailyEntries, dynamicMonths]);
 
   // 4. Cost Breakdown Donut Data
   const costBreakdown = useMemo(() => {
@@ -246,20 +281,29 @@ export const Dashboard: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Branch Banner if filtered */}
-      {branchId !== 'ALL' && (
-        <div className="bg-teal-50 border border-teal-200 rounded-xl px-4 py-2.5 flex items-center justify-between text-xs text-teal-900">
-          <div className="flex items-center gap-2">
+      {/* Active Filter Banners */}
+      <div className="flex flex-wrap items-center gap-3">
+        {branchId !== 'ALL' && (
+          <div className="bg-teal-50 border border-teal-200 rounded-xl px-4 py-2 flex items-center gap-2 text-xs text-teal-900">
             <Building className="w-4 h-4 text-teal-700" />
             <span className="font-semibold">
-              Filtered to: {branches?.find((b) => b.id === branchId)?.name} ({branches?.find((b) => b.id === branchId)?.code})
+              Branch: {branches?.find((b) => b.id === branchId)?.name} ({branches?.find((b) => b.id === branchId)?.code})
             </span>
           </div>
-          <span className="text-teal-700 font-medium">
-            Location: {branches?.find((b) => b.id === branchId)?.location}
-          </span>
-        </div>
-      )}
+        )}
+
+        {department !== 'ALL' && (
+          <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-4 py-2 flex items-center gap-2 text-xs text-indigo-900">
+            <Stethoscope className="w-4 h-4 text-indigo-700" />
+            <span className="font-semibold">
+              Department Scoped: {DEPARTMENT_NAMES[department]}
+            </span>
+            <span className="text-indigo-600 font-normal">
+              (Overhead & doctor payouts scoped strictly to this department)
+            </span>
+          </div>
+        )}
+      </div>
 
       {/* Row 1: 6 KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
@@ -350,6 +394,52 @@ export const Dashboard: React.FC = () => {
           doctorPayouts={currentMetrics.totalDoctorPayout}
           netProfit={currentMetrics.netProfit}
         />
+      </div>
+
+      {/* Row 4: Department Profitability Comparison Engine */}
+      <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs">
+        <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+          <div>
+            <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+              <Stethoscope className="w-4 h-4 text-teal-600" />
+              Department Profitability Comparison (Gross Revenue vs. Total Costs vs. Net Margin)
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Comparative department performance including allocated operational overhead and universal specialist payouts.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <DepartmentProfitabilityBar metrics={deptProfitabilityMetrics} />
+        </div>
+
+        {/* Quick Department Margin Cards */}
+        <div className="mt-5 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-4 border-t border-slate-100">
+          {deptProfitabilityMetrics.map((m) => (
+            <div
+              key={m.department}
+              className="p-3 rounded-lg border border-slate-100 bg-slate-50/60 hover:bg-slate-50 transition-colors"
+            >
+              <span className="text-[11px] font-semibold text-slate-600 truncate block">
+                {m.name.replace(' (Pathology)', '').replace(' Center', '')}
+              </span>
+              <p className="text-sm font-bold text-slate-900 mt-1">
+                {formatINR(m.revenue, true)}
+              </p>
+              <div className="flex items-center justify-between text-[11px] mt-1 pt-1 border-t border-slate-200/60">
+                <span className="text-slate-400">Margin:</span>
+                <span
+                  className={`font-bold ${
+                    m.marginPct >= 20 ? 'text-emerald-700' : m.marginPct >= 0 ? 'text-teal-700' : 'text-rose-700'
+                  }`}
+                >
+                  {formatPct(m.marginPct)}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

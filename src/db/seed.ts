@@ -7,6 +7,8 @@ import {
   DialysisSlotRecord,
   DailyDepartmentEntry,
   MonthlyCostRecord,
+  DepartmentCostRecord,
+  DepartmentId,
 } from '../types/schema';
 import { eachDayOfInterval, parseISO, format, getDay } from 'date-fns';
 
@@ -145,9 +147,82 @@ export const INITIAL_CAPACITY_LOGS: DialysisCapacityLog[] = [
   },
 ];
 
+export const DEPARTMENT_COST_WEIGHTS: Record<DepartmentId, number> = {
+  DIALYSIS: 0.32,
+  BLOOD_TEST: 0.20,
+  USG: 0.14,
+  XRAY: 0.12,
+  PHYSIO: 0.10,
+  CONSULTATION: 0.12,
+};
+
+export function splitMonthlyCostToDepartments(cost: MonthlyCostRecord): DepartmentCostRecord[] {
+  const depts: DepartmentId[] = ['DIALYSIS', 'BLOOD_TEST', 'USG', 'XRAY', 'PHYSIO', 'CONSULTATION'];
+  const records: DepartmentCostRecord[] = [];
+
+  let sumRent = 0;
+  let sumElec = 0;
+  let sumStaff = 0;
+  let sumCons = 0;
+  let sumLic = 0;
+  let sumOth = 0;
+
+  depts.forEach((dept, idx) => {
+    const isLast = idx === depts.length - 1;
+    const w = DEPARTMENT_COST_WEIGHTS[dept];
+
+    const rent = isLast ? cost.rent - sumRent : Math.round(cost.rent * w);
+    const electricity = isLast ? cost.electricity - sumElec : Math.round(cost.electricity * w);
+    const staffing = isLast ? cost.staffing - sumStaff : Math.round(cost.staffing * w);
+    const consumables = isLast ? cost.consumables - sumCons : Math.round(cost.consumables * w);
+    const licensing = isLast ? cost.licensing - sumLic : Math.round(cost.licensing * w);
+    const other = isLast ? cost.other - sumOth : Math.round(cost.other * w);
+
+    sumRent += rent;
+    sumElec += electricity;
+    sumStaff += staffing;
+    sumCons += consumables;
+    sumLic += licensing;
+    sumOth += other;
+
+    const fixedOpeXTotal = rent + electricity + staffing + consumables + licensing + other;
+
+    records.push({
+      id: `${cost.branchId}_${cost.yearMonth}_${dept}`,
+      branchId: cost.branchId,
+      yearMonth: cost.yearMonth,
+      department: dept,
+      rent,
+      electricity,
+      staffing,
+      consumables,
+      licensing,
+      other,
+      fixedOpeXTotal,
+    });
+  });
+
+  return records;
+}
+
 export async function seedDatabase(forceReset = false): Promise<void> {
   const isLoaded = await db.meta.get('isSampleDataLoaded');
-  if (isLoaded && !forceReset) return;
+  if (isLoaded && !forceReset) {
+    // Never overwrite user-added or modified data on routine boot!
+    // Check if departmentCosts table needs backfill (v2 migration)
+    const deptCostCount = await db.departmentCosts.count();
+    if (deptCostCount === 0) {
+      const existingCosts = await db.monthlyCosts.toArray();
+      const backfillRecords: DepartmentCostRecord[] = [];
+      existingCosts.forEach((c) => {
+        backfillRecords.push(...splitMonthlyCostToDepartments(c));
+      });
+      if (backfillRecords.length > 0) {
+        await db.departmentCosts.bulkPut(backfillRecords);
+      }
+    }
+    return;
+  }
 
   const rand = createPrng(20260401);
   const days = eachDayOfInterval({
@@ -159,12 +234,15 @@ export async function seedDatabase(forceReset = false): Promise<void> {
   const dailyEntries: DailyDepartmentEntry[] = [];
   const monthlyCosts: MonthlyCostRecord[] = [];
   const rateOverrides: BranchRateOverride[] = [
-    // Sample override at Saifee Diagnostics Center for USG Whole Abdomen & Nephrologist
+    // Sample override at Saifee Diagnostics Center for USG Whole Abdomen (25% Radiologist Rev-Share)
     {
       id: 'br_saifee_diag_srv_usg_abd',
       branchId: 'br_saifee_diag',
       serviceId: 'srv_usg_abd',
       overrideRate: 1350,
+      overridePayoutModel: 'REVENUE_SHARE',
+      overrideRevSharePct: 25,
+      overrideFixedMonthlyFee: 0,
     },
     {
       id: 'br_saifee_diag_srv_con_nephro',
@@ -236,8 +314,7 @@ export async function seedDatabase(forceReset = false): Promise<void> {
         const count = Math.max(0, Math.round(baseVol * growthFactor * (0.65 + rand() * 0.7)));
         const revenue = count * rate;
         const doctorVariablePayout =
-          service.department === 'CONSULTATION' &&
-          (payoutModel === 'REVENUE_SHARE' || payoutModel === 'HYBRID')
+          payoutModel === 'REVENUE_SHARE' || payoutModel === 'HYBRID'
             ? Math.round(revenue * (revSharePct / 100))
             : 0;
 
@@ -282,6 +359,12 @@ export async function seedDatabase(forceReset = false): Promise<void> {
     });
   });
 
+  // Split each monthly cost into 6 department cost records
+  const departmentCosts: DepartmentCostRecord[] = [];
+  monthlyCosts.forEach((mc) => {
+    departmentCosts.push(...splitMonthlyCostToDepartments(mc));
+  });
+
   await db.transaction(
     'rw',
     [
@@ -292,6 +375,7 @@ export async function seedDatabase(forceReset = false): Promise<void> {
       db.dialysisSlots,
       db.dailyEntries,
       db.monthlyCosts,
+      db.departmentCosts,
       db.meta,
     ],
     async () => {
@@ -303,6 +387,7 @@ export async function seedDatabase(forceReset = false): Promise<void> {
         db.dialysisSlots.clear(),
         db.dailyEntries.clear(),
         db.monthlyCosts.clear(),
+        db.departmentCosts.clear(),
       ]);
       await db.branches.bulkAdd(MASTER_BRANCHES);
       await db.serviceCatalog.bulkAdd(MASTER_CATALOG);
@@ -311,6 +396,7 @@ export async function seedDatabase(forceReset = false): Promise<void> {
       await db.dialysisSlots.bulkAdd(dialysisSlots);
       await db.dailyEntries.bulkAdd(dailyEntries);
       await db.monthlyCosts.bulkAdd(monthlyCosts);
+      await db.departmentCosts.bulkAdd(departmentCosts);
       await db.meta.put({ key: 'isSampleDataLoaded', value: true });
       await db.meta.put({ key: 'isEdited', value: false });
     }

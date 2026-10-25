@@ -6,8 +6,10 @@ import {
   ServiceCatalogItem,
   BranchRateOverride,
   DoctorPayoutModel,
+  DepartmentId,
   BranchId,
 } from '../types/schema';
+import { triggerAutoSync } from '../db/cloudSync';
 import { formatINR } from '../utils/formatters';
 import {
   Tag,
@@ -17,17 +19,20 @@ import {
   Plus,
   Trash2,
   HelpCircle,
+  X,
 } from 'lucide-react';
 
 export const RateCard: React.FC = () => {
   const { branchId, setBranchId } = useAppStore();
 
-  const activeBranchId: BranchId =
-    branchId === 'ALL' ? 'br_saifee_diag' : (branchId as BranchId);
-
   // Live data
   const catalog = useLiveQuery(() => db.serviceCatalog.toArray(), []);
   const branches = useLiveQuery(() => db.branches.toArray(), []);
+  const activeBranchId: BranchId =
+    branchId === 'ALL'
+      ? (branches && branches.length > 0 ? branches[0].id : 'br_saifee_diag')
+      : (branchId as BranchId);
+
   const overrides = useLiveQuery(
     () => db.rateOverrides.where('branchId').equals(activeBranchId).toArray(),
     [activeBranchId]
@@ -36,6 +41,26 @@ export const RateCard: React.FC = () => {
   // Master rate card editing state
   const [editingCatalog, setEditingCatalog] = useState<Record<string, ServiceCatalogItem>>({});
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+
+  // Add Custom Service Modal state
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newSrvForm, setNewSrvForm] = useState<{
+    name: string;
+    department: DepartmentId;
+    subCategory: string;
+    defaultRate: number;
+    payoutModel: DoctorPayoutModel;
+    defaultRevSharePct: number;
+    defaultFixedMonthlyFee: number;
+  }>({
+    name: '',
+    department: 'BLOOD_TEST',
+    subCategory: '',
+    defaultRate: 500,
+    payoutModel: 'NONE',
+    defaultRevSharePct: 0,
+    defaultFixedMonthlyFee: 0,
+  });
 
   // Overrides editing state
   const [editingOverrides, setEditingOverrides] = useState<Record<string, BranchRateOverride>>({});
@@ -82,9 +107,51 @@ export const RateCard: React.FC = () => {
 
     await db.serviceCatalog.put(item);
     await db.meta.put({ key: 'isEdited', value: true });
+    triggerAutoSync();
 
     setSaveSuccess(id);
     setTimeout(() => setSaveSuccess(null), 2000);
+  };
+
+  const handleDeleteService = async (id: string, name: string) => {
+    if (window.confirm(`Are you sure you want to remove "${name}" from the service catalog?`)) {
+      await db.serviceCatalog.delete(id);
+      await db.meta.put({ key: 'isEdited', value: true });
+      triggerAutoSync();
+    }
+  };
+
+  const handleCreateCustomService = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSrvForm.name.trim()) return;
+
+    const id = `srv_custom_${Date.now()}`;
+    const newRecord: ServiceCatalogItem = {
+      id,
+      name: newSrvForm.name.trim(),
+      department: newSrvForm.department,
+      subCategory: newSrvForm.subCategory.trim() || undefined,
+      defaultRate: Number(newSrvForm.defaultRate) || 0,
+      payoutModel: newSrvForm.payoutModel,
+      defaultRevSharePct: Number(newSrvForm.defaultRevSharePct) || 0,
+      defaultFixedMonthlyFee: Number(newSrvForm.defaultFixedMonthlyFee) || 0,
+      isActive: true,
+    };
+
+    await db.serviceCatalog.put(newRecord);
+    await db.meta.put({ key: 'isEdited', value: true });
+    triggerAutoSync();
+
+    setShowAddModal(false);
+    setNewSrvForm({
+      name: '',
+      department: 'BLOOD_TEST',
+      subCategory: '',
+      defaultRate: 500,
+      payoutModel: 'NONE',
+      defaultRevSharePct: 0,
+      defaultFixedMonthlyFee: 0,
+    });
   };
 
   const handleSaveOverrideRow = async (overrideId: string) => {
@@ -93,6 +160,7 @@ export const RateCard: React.FC = () => {
 
     await db.rateOverrides.put(item);
     await db.meta.put({ key: 'isEdited', value: true });
+    triggerAutoSync();
 
     setSaveSuccess(overrideId);
     setTimeout(() => setSaveSuccess(null), 2000);
@@ -101,6 +169,7 @@ export const RateCard: React.FC = () => {
   const handleDeleteOverride = async (overrideId: string) => {
     await db.rateOverrides.delete(overrideId);
     await db.meta.put({ key: 'isEdited', value: true });
+    triggerAutoSync();
   };
 
   const handleAddOverride = async (serviceId: string) => {
@@ -119,6 +188,7 @@ export const RateCard: React.FC = () => {
 
     await db.rateOverrides.put(newOverride);
     await db.meta.put({ key: 'isEdited', value: true });
+    triggerAutoSync();
   };
 
   const activeBranchName = branches?.find((b) => b.id === activeBranchId)?.name;
@@ -127,7 +197,7 @@ export const RateCard: React.FC = () => {
     <div className="space-y-8">
       {/* 1. MASTER RATE CARD */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+        <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
           <div>
             <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
               <Tag className="w-4 h-4 text-teal-600" />
@@ -137,6 +207,14 @@ export const RateCard: React.FC = () => {
               Inline editable baseline pricing and doctor remuneration models applicable across all branches
             </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setShowAddModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs rounded-lg shadow-sm transition-colors cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add Custom Service</span>
+          </button>
         </div>
 
         <div className="overflow-x-auto">
@@ -157,7 +235,7 @@ export const RateCard: React.FC = () => {
               {catalog?.map((item) => {
                 const current = editingCatalog[item.id] || item;
                 const isSaved = saveSuccess === item.id;
-                const isConsult = item.department === 'CONSULTATION';
+                const model = current.payoutModel || 'NONE';
 
                 return (
                   <tr key={item.id} className="hover:bg-slate-50/70 transition-colors">
@@ -182,31 +260,25 @@ export const RateCard: React.FC = () => {
                       />
                     </td>
                     <td className="px-4 py-2">
-                      {isConsult ? (
-                        <select
-                          value={current.payoutModel}
-                          onChange={(e) =>
-                            handleCatalogFieldChange(
-                              item.id,
-                              'payoutModel',
-                              e.target.value as DoctorPayoutModel
-                            )
-                          }
-                          className="w-full px-2 py-1 border border-slate-300 rounded text-xs font-medium"
-                        >
-                          <option value="NONE">NONE</option>
-                          <option value="REVENUE_SHARE">REVENUE_SHARE</option>
-                          <option value="FIXED_MONTHLY">FIXED_MONTHLY</option>
-                          <option value="HYBRID">HYBRID</option>
-                        </select>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
+                      <select
+                        value={model}
+                        onChange={(e) =>
+                          handleCatalogFieldChange(
+                            item.id,
+                            'payoutModel',
+                            e.target.value as DoctorPayoutModel
+                          )
+                        }
+                        className="w-full px-2 py-1 border border-slate-300 rounded text-xs font-medium bg-white"
+                      >
+                        <option value="NONE">NONE</option>
+                        <option value="REVENUE_SHARE">REVENUE_SHARE</option>
+                        <option value="FIXED_MONTHLY">FIXED_MONTHLY</option>
+                        <option value="HYBRID">HYBRID</option>
+                      </select>
                     </td>
                     <td className="px-4 py-2 text-right">
-                      {isConsult &&
-                      (current.payoutModel === 'REVENUE_SHARE' ||
-                        current.payoutModel === 'HYBRID') ? (
+                      {model === 'REVENUE_SHARE' || model === 'HYBRID' ? (
                         <input
                           type="number"
                           min="0"
@@ -226,9 +298,7 @@ export const RateCard: React.FC = () => {
                       )}
                     </td>
                     <td className="px-4 py-2 text-right">
-                      {isConsult &&
-                      (current.payoutModel === 'FIXED_MONTHLY' ||
-                        current.payoutModel === 'HYBRID') ? (
+                      {model === 'FIXED_MONTHLY' || model === 'HYBRID' ? (
                         <input
                           type="number"
                           min="0"
@@ -247,17 +317,27 @@ export const RateCard: React.FC = () => {
                       )}
                     </td>
                     <td className="px-4 py-2 text-center">
-                      <button
-                        type="button"
-                        onClick={() => handleSaveCatalogRow(item.id)}
-                        className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors ${
-                          isSaved
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-slate-100 hover:bg-teal-600 hover:text-white text-slate-700'
-                        }`}
-                      >
-                        {isSaved ? 'Saved ✓' : 'Save'}
-                      </button>
+                      <div className="flex items-center justify-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleSaveCatalogRow(item.id)}
+                          className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors cursor-pointer ${
+                            isSaved
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-slate-100 hover:bg-teal-600 hover:text-white text-slate-700'
+                          }`}
+                        >
+                          {isSaved ? 'Saved ✓' : 'Save'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteService(item.id, item.name)}
+                          className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                          title="Delete service"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -285,10 +365,13 @@ export const RateCard: React.FC = () => {
             <select
               value={activeBranchId}
               onChange={(e) => setBranchId(e.target.value)}
-              className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-800"
+              className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-800 cursor-pointer"
             >
-              <option value="br_saifee_diag">🔬 Saifee Diagnostics Center (SDC)</option>
-              <option value="br_dar_ul_shifa">🏥 Dar ul Shifa (DUS)</option>
+              {branches?.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name} ({b.code})
+                </option>
+              ))}
             </select>
           </div>
         </div>
@@ -313,7 +396,7 @@ export const RateCard: React.FC = () => {
                   const srv = catalog?.find((s) => s.id === ov.serviceId);
                   const isSaved = saveSuccess === ov.id;
                   const current = editingOverrides[ov.id] || ov;
-                  const isConsult = srv?.department === 'CONSULTATION';
+                  const activeModel = current.overridePayoutModel ?? srv?.payoutModel ?? 'NONE';
 
                   return (
                     <tr key={ov.id} className="hover:bg-slate-50/70">
@@ -341,31 +424,27 @@ export const RateCard: React.FC = () => {
                         />
                       </td>
                       <td className="px-4 py-2.5">
-                        {isConsult ? (
-                          <select
-                            value={current.overridePayoutModel ?? srv?.payoutModel}
-                            onChange={(e) =>
-                              setEditingOverrides((prev) => ({
-                                ...prev,
-                                [ov.id]: {
-                                  ...prev[ov.id],
-                                  overridePayoutModel: e.target.value as DoctorPayoutModel,
-                                },
-                              }))
-                            }
-                            className="w-full px-2 py-1 border border-slate-300 rounded text-xs font-medium"
-                          >
-                            <option value="NONE">NONE</option>
-                            <option value="REVENUE_SHARE">REVENUE_SHARE</option>
-                            <option value="FIXED_MONTHLY">FIXED_MONTHLY</option>
-                            <option value="HYBRID">HYBRID</option>
-                          </select>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
+                        <select
+                          value={activeModel}
+                          onChange={(e) =>
+                            setEditingOverrides((prev) => ({
+                              ...prev,
+                              [ov.id]: {
+                                ...prev[ov.id],
+                                overridePayoutModel: e.target.value as DoctorPayoutModel,
+                              },
+                            }))
+                          }
+                          className="w-full px-2 py-1 border border-slate-300 rounded text-xs font-medium bg-white"
+                        >
+                          <option value="NONE">NONE</option>
+                          <option value="REVENUE_SHARE">REVENUE_SHARE</option>
+                          <option value="FIXED_MONTHLY">FIXED_MONTHLY</option>
+                          <option value="HYBRID">HYBRID</option>
+                        </select>
                       </td>
                       <td className="px-4 py-2.5 text-right">
-                        {isConsult ? (
+                        {activeModel === 'REVENUE_SHARE' || activeModel === 'HYBRID' ? (
                           <input
                             type="number"
                             min="0"
@@ -387,7 +466,7 @@ export const RateCard: React.FC = () => {
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-right">
-                        {isConsult ? (
+                        {activeModel === 'FIXED_MONTHLY' || activeModel === 'HYBRID' ? (
                           <input
                             type="number"
                             min="0"
@@ -467,13 +546,184 @@ export const RateCard: React.FC = () => {
               const el = document.getElementById('add-override-select') as HTMLSelectElement;
               if (el?.value) handleAddOverride(el.value);
             }}
-            className="flex items-center gap-1 text-xs font-semibold bg-white border border-slate-300 hover:border-teal-500 text-slate-700 hover:text-teal-700 px-3 py-1 rounded shadow-xs transition-colors"
+            className="flex items-center gap-1 text-xs font-semibold bg-white border border-slate-300 hover:border-teal-500 text-slate-700 hover:text-teal-700 px-3 py-1 rounded shadow-xs transition-colors cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5 text-teal-600" />
             <span>Create Branch Override</span>
           </button>
         </div>
       </div>
+
+      {/* Add Custom Service Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl border border-slate-200 max-w-lg w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                <Plus className="w-4 h-4 text-teal-600" />
+                Add Custom Clinic Service
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowAddModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateCustomService} className="p-5 space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="col-span-2">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Service Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. MRI Brain with Contrast"
+                    value={newSrvForm.name}
+                    onChange={(e) => setNewSrvForm((p) => ({ ...p, name: e.target.value }))}
+                    className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:ring-1 focus:ring-teal-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Department *
+                  </label>
+                  <select
+                    value={newSrvForm.department}
+                    onChange={(e) =>
+                      setNewSrvForm((p) => ({ ...p, department: e.target.value as DepartmentId }))
+                    }
+                    className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+                  >
+                    <option value="BLOOD_TEST">Pathology / Blood Test</option>
+                    <option value="USG">USG / Ultrasound</option>
+                    <option value="XRAY">X-Ray / Radiology</option>
+                    <option value="PHYSIO">Physiotherapy</option>
+                    <option value="CONSULTATION">Doctor Consultation</option>
+                    <option value="DIALYSIS">Dialysis Modality</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Sub-Modality / Category
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Special, Routine, Doppler"
+                    value={newSrvForm.subCategory}
+                    onChange={(e) => setNewSrvForm((p) => ({ ...p, subCategory: e.target.value }))}
+                    className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Standard Rate (₹) *
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    value={newSrvForm.defaultRate}
+                    onChange={(e) =>
+                      setNewSrvForm((p) => ({
+                        ...p,
+                        defaultRate: parseInt(e.target.value, 10) || 0,
+                      }))
+                    }
+                    className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Doctor Remuneration Model
+                  </label>
+                  <select
+                    value={newSrvForm.payoutModel}
+                    onChange={(e) =>
+                      setNewSrvForm((p) => ({
+                        ...p,
+                        payoutModel: e.target.value as DoctorPayoutModel,
+                      }))
+                    }
+                    className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg bg-white"
+                  >
+                    <option value="NONE">NONE (No Doctor Fee)</option>
+                    <option value="REVENUE_SHARE">REVENUE_SHARE (% Fee)</option>
+                    <option value="FIXED_MONTHLY">FIXED_MONTHLY (Retainer)</option>
+                    <option value="HYBRID">HYBRID (Retainer + %)</option>
+                  </select>
+                </div>
+
+                {(newSrvForm.payoutModel === 'REVENUE_SHARE' ||
+                  newSrvForm.payoutModel === 'HYBRID') && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Rev Share % (Doctor)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={newSrvForm.defaultRevSharePct}
+                      onChange={(e) =>
+                        setNewSrvForm((p) => ({
+                          ...p,
+                          defaultRevSharePct: parseInt(e.target.value, 10) || 0,
+                        }))
+                      }
+                      className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg font-bold"
+                    />
+                  </div>
+                )}
+
+                {(newSrvForm.payoutModel === 'FIXED_MONTHLY' ||
+                  newSrvForm.payoutModel === 'HYBRID') && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Fixed Retainer (₹/Month)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={newSrvForm.defaultFixedMonthlyFee}
+                      onChange={(e) =>
+                        setNewSrvForm((p) => ({
+                          ...p,
+                          defaultFixedMonthlyFee: parseInt(e.target.value, 10) || 0,
+                        }))
+                      }
+                      className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg font-bold"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="px-4 py-2 border border-slate-300 text-slate-600 rounded-lg text-xs font-semibold hover:bg-slate-50 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors cursor-pointer"
+                >
+                  Save to Catalog
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

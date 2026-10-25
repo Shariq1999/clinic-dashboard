@@ -1,6 +1,7 @@
 import React from 'react';
 import { useAppStore, NavTab } from '../../store/useAppStore';
 import { BranchSelector } from '../ui/BranchSelector';
+import { DepartmentSelector } from '../ui/DepartmentSelector';
 import { DateRangePicker } from '../ui/DateRangePicker';
 import { SampleDataBadge } from '../ui/SampleDataBadge';
 
@@ -54,13 +55,21 @@ export const TopBar: React.FC = () => {
         </div>
       </div>
 
-      {/* Bottom row: Global Controls (Branch Selector + Date Range Picker) */}
+      {/* Bottom row: Global Controls (Branch Selector + Department Selector + Date Range Picker) */}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            Branch:
-          </span>
-          <BranchSelector />
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+              Branch:
+            </span>
+            <BranchSelector />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+              Dept:
+            </span>
+            <DepartmentSelector />
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">

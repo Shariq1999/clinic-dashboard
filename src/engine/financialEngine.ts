@@ -4,10 +4,14 @@ import {
   DialysisSlotRecord,
   DailyDepartmentEntry,
   MonthlyCostRecord,
+  DepartmentCostRecord,
   ServiceCatalogItem,
   BranchRateOverride,
   DepartmentId,
+  DepartmentProfitabilityMetric,
+  DEPARTMENT_NAMES,
 } from '../types/schema';
+import { DEPARTMENT_COST_WEIGHTS } from '../db/seed';
 import {
   eachDayOfInterval,
   parseISO,
@@ -61,7 +65,8 @@ export function computePeriodMetrics(
   dailyEntries: DailyDepartmentEntry[],
   monthlyCosts: MonthlyCostRecord[],
   catalog: ServiceCatalogItem[],
-  overrides: BranchRateOverride[]
+  overrides: BranchRateOverride[],
+  departmentCosts?: DepartmentCostRecord[]
 ) {
   const activeBranches =
     ctx.branchId === 'ALL' ? branches : branches.filter((b) => b.id === ctx.branchId);
@@ -116,16 +121,18 @@ export function computePeriodMetrics(
     0
   );
 
-  // D. Pro-rated Monthly OPEX + Pro-rated Fixed Monthly Doctor Retainers
+  // D. Pro-rated Monthly OPEX + Pro-rated Fixed Monthly Doctor Retainers (Universal Doctor Remuneration)
   let proRatedOpex = 0;
   let proRatedFixedDoctorFee = 0;
 
-  // Calculate fixed monthly doctor retainers per branch
-  const consultServices = catalog.filter((c) => c.department === 'CONSULTATION');
+  // Calculate fixed monthly doctor retainers per branch (filtered by department context)
+  const eligibleServices = catalog.filter(
+    (c) => ctx.department === 'ALL' || c.department === ctx.department
+  );
   const branchMonthlyFixedDocMap = new Map<string, number>();
   activeBranches.forEach((b) => {
     let monthlyFixed = 0;
-    consultServices.forEach((srv) => {
+    eligibleServices.forEach((srv) => {
       const ov = overrides.find((o) => o.branchId === b.id && o.serviceId === srv.id);
       const model = ov?.overridePayoutModel ?? srv.payoutModel;
       const fixedFee = ov?.overrideFixedMonthlyFee ?? srv.defaultFixedMonthlyFee;
@@ -140,10 +147,28 @@ export function computePeriodMetrics(
     const ym = format(d, 'yyyy-MM');
     const daysInMo = getDaysInMonth(d);
     activeBranches.forEach((b) => {
-      const costRec = monthlyCosts.find((c) => c.branchId === b.id && c.yearMonth === ym);
-      if (costRec) {
-        proRatedOpex += costRec.fixedOpeXTotal / daysInMo;
+      if (ctx.department === 'ALL') {
+        const costRec = monthlyCosts.find((c) => c.branchId === b.id && c.yearMonth === ym);
+        if (costRec) {
+          proRatedOpex += costRec.fixedOpeXTotal / daysInMo;
+        }
+      } else {
+        // Look up department-specific cost record first
+        const deptRec = departmentCosts?.find(
+          (dc) => dc.branchId === b.id && dc.yearMonth === ym && dc.department === ctx.department
+        );
+        if (deptRec) {
+          proRatedOpex += deptRec.fixedOpeXTotal / daysInMo;
+        } else {
+          // Fallback to proportional weight split of branch total OPEX
+          const costRec = monthlyCosts.find((c) => c.branchId === b.id && c.yearMonth === ym);
+          if (costRec) {
+            const w = DEPARTMENT_COST_WEIGHTS[ctx.department] || 0.166;
+            proRatedOpex += (costRec.fixedOpeXTotal * w) / daysInMo;
+          }
+        }
       }
+
       proRatedFixedDoctorFee += (branchMonthlyFixedDocMap.get(b.id) || 0) / daysInMo;
     });
   });
@@ -170,6 +195,172 @@ export function computePeriodMetrics(
     totalAvailableSlots,
     dialysisOccupancyPct,
   };
+}
+
+// 3. Compute Department-Wise Profitability Engine
+export function computeDepartmentProfitability(
+  ctx: FilterContext,
+  branches: Branch[],
+  capacityLogs: DialysisCapacityLog[],
+  dialysisSlots: DialysisSlotRecord[],
+  dailyEntries: DailyDepartmentEntry[],
+  departmentCosts: DepartmentCostRecord[],
+  monthlyCosts: MonthlyCostRecord[],
+  catalog: ServiceCatalogItem[],
+  overrides: BranchRateOverride[]
+): DepartmentProfitabilityMetric[] {
+  const activeBranches =
+    ctx.branchId === 'ALL' ? branches : branches.filter((b) => b.id === ctx.branchId);
+  const activeBranchIds = new Set(activeBranches.map((b) => b.id));
+
+  const days = eachDayOfInterval({
+    start: parseISO(ctx.startDate),
+    end: parseISO(ctx.endDate),
+  });
+
+  const departments: DepartmentId[] = [
+    'DIALYSIS',
+    'BLOOD_TEST',
+    'USG',
+    'XRAY',
+    'PHYSIO',
+    'CONSULTATION',
+  ];
+
+  // Map of fixed doctor fees per department per branch: key = `${branchId}_${dept}`
+  const branchDeptFixedDocFee = new Map<string, number>();
+  activeBranches.forEach((b) => {
+    departments.forEach((dept) => {
+      const deptServices = catalog.filter((c) => c.department === dept);
+      let fee = 0;
+      deptServices.forEach((srv) => {
+        const ov = overrides.find((o) => o.branchId === b.id && o.serviceId === srv.id);
+        const model = ov?.overridePayoutModel ?? srv.payoutModel;
+        const fixedFee = ov?.overrideFixedMonthlyFee ?? srv.defaultFixedMonthlyFee;
+        if (model === 'FIXED_MONTHLY' || model === 'HYBRID') {
+          fee += fixedFee;
+        }
+      });
+      branchDeptFixedDocFee.set(`${b.id}_${dept}`, fee);
+    });
+  });
+
+  const rawMetrics = departments.map((dept) => {
+    // 1. Footfall, Revenue & Variable Doctor Payouts
+    let footfall = 0;
+    let revenue = 0;
+    let variableDocPayout = 0;
+
+    if (dept === 'DIALYSIS') {
+      const slots = dialysisSlots.filter(
+        (s) =>
+          activeBranchIds.has(s.branchId) &&
+          s.date >= ctx.startDate &&
+          s.date <= ctx.endDate &&
+          getDay(parseISO(s.date)) !== 0 &&
+          s.isOccupied
+      );
+      footfall = slots.length;
+      revenue = slots.reduce((sum, s) => sum + s.appliedRate, 0);
+    } else {
+      const entries = dailyEntries.filter(
+        (e) =>
+          activeBranchIds.has(e.branchId) &&
+          e.date >= ctx.startDate &&
+          e.date <= ctx.endDate &&
+          e.department === dept
+      );
+      footfall = entries.reduce((sum, e) => sum + e.patientCount, 0);
+      revenue = entries.reduce((sum, e) => sum + e.revenue, 0);
+      variableDocPayout = entries.reduce((sum, e) => sum + (e.doctorVariablePayout || 0), 0);
+    }
+
+    // 2. Pro-rated OPEX across all 6 cost buckets
+    let rent = 0;
+    let electricity = 0;
+    let staffing = 0;
+    let consumables = 0;
+    let licensing = 0;
+    let other = 0;
+    let fixedDocFee = 0;
+
+    days.forEach((d) => {
+      const ym = format(d, 'yyyy-MM');
+      const daysInMo = getDaysInMonth(d);
+
+      activeBranches.forEach((b) => {
+        const deptRec = departmentCosts?.find(
+          (dc) => dc.branchId === b.id && dc.yearMonth === ym && dc.department === dept
+        );
+
+        if (deptRec) {
+          rent += deptRec.rent / daysInMo;
+          electricity += deptRec.electricity / daysInMo;
+          staffing += deptRec.staffing / daysInMo;
+          consumables += deptRec.consumables / daysInMo;
+          licensing += deptRec.licensing / daysInMo;
+          other += deptRec.other / daysInMo;
+        } else {
+          const mc = monthlyCosts.find((c) => c.branchId === b.id && c.yearMonth === ym);
+          if (mc) {
+            const w = DEPARTMENT_COST_WEIGHTS[dept] || 0.166;
+            rent += (mc.rent * w) / daysInMo;
+            electricity += (mc.electricity * w) / daysInMo;
+            staffing += (mc.staffing * w) / daysInMo;
+            consumables += (mc.consumables * w) / daysInMo;
+            licensing += (mc.licensing * w) / daysInMo;
+            other += (mc.other * w) / daysInMo;
+          }
+        }
+
+        fixedDocFee += (branchDeptFixedDocFee.get(`${b.id}_${dept}`) || 0) / daysInMo;
+      });
+    });
+
+    const opexTotal = rent + electricity + staffing + consumables + licensing + other;
+    const docTotal = variableDocPayout + fixedDocFee;
+    const totalCost = opexTotal + docTotal;
+    const netProfit = revenue - totalCost;
+    const marginPct = revenue > 0 ? (netProfit / revenue) * 100 : 0;
+
+    return {
+      department: dept,
+      name: DEPARTMENT_NAMES[dept],
+      footfall,
+      revenue,
+      proRatedOpex: {
+        rent: Math.round(rent),
+        electricity: Math.round(electricity),
+        staffing: Math.round(staffing),
+        consumables: Math.round(consumables),
+        licensing: Math.round(licensing),
+        other: Math.round(other),
+        total: Math.round(opexTotal),
+      },
+      doctorPayouts: {
+        variable: Math.round(variableDocPayout),
+        fixed: Math.round(fixedDocFee),
+        total: Math.round(docTotal),
+      },
+      totalCost: Math.round(totalCost),
+      netProfit: Math.round(netProfit),
+      marginPct,
+      revContributionPct: 0,
+      profitContributionPct: 0,
+    };
+  });
+
+  const totalRevAllDepts = rawMetrics.reduce((s, m) => s + m.revenue, 0);
+  const totalNetProfitAllDepts = rawMetrics.reduce((s, m) => s + m.netProfit, 0);
+
+  return rawMetrics.map((m) => ({
+    ...m,
+    revContributionPct: totalRevAllDepts > 0 ? (m.revenue / totalRevAllDepts) * 100 : 0,
+    profitContributionPct:
+      totalNetProfitAllDepts > 0 && m.netProfit > 0
+        ? (m.netProfit / totalNetProfitAllDepts) * 100
+        : 0,
+  }));
 }
 
 // 3. Safe Percentage Change Helper

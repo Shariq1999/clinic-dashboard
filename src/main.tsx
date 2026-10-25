@@ -26,6 +26,16 @@ async function bootstrap() {
     </div>
   );
 
+  // Request persistent browser storage to prevent IndexedDB eviction under disk pressure
+  if (navigator.storage && navigator.storage.persist) {
+    try {
+      const isPersisted = await navigator.storage.persist();
+      console.log(`[Storage] IndexedDB storage persistence granted: ${isPersisted}`);
+    } catch (e) {
+      console.warn('[Storage] Could not request storage persistence:', e);
+    }
+  }
+
   try {
     await seedDatabase(false);
   } catch (err) {

@@ -8,6 +8,41 @@ export type DepartmentId =
   | 'PHYSIO'
   | 'CONSULTATION';
 
+export const DEPARTMENT_NAMES: Record<DepartmentId, string> = {
+  DIALYSIS: 'Dialysis Center',
+  BLOOD_TEST: 'Blood Tests (Pathology)',
+  XRAY: 'X-Ray & Radiology',
+  USG: 'USG / Doppler',
+  PHYSIO: 'Physiotherapy',
+  CONSULTATION: 'Doctor Consultations',
+};
+
+export interface DepartmentProfitabilityMetric {
+  department: DepartmentId;
+  name: string;
+  footfall: number;
+  revenue: number;
+  proRatedOpex: {
+    rent: number;
+    electricity: number;
+    staffing: number;
+    consumables: number;
+    licensing: number;
+    other: number;
+    total: number;
+  };
+  doctorPayouts: {
+    variable: number;
+    fixed: number;
+    total: number;
+  };
+  totalCost: number;
+  netProfit: number;
+  marginPct: number;
+  revContributionPct: number;
+  profitContributionPct: number;
+}
+
 export type DialysisSlotType = 'STANDARD' | 'EMERGENCY' | 'SINGLE_USE';
 
 export type DoctorPayoutModel = 'NONE' | 'REVENUE_SHARE' | 'FIXED_MONTHLY' | 'HYBRID';
@@ -92,6 +127,20 @@ export interface MonthlyCostRecord {
   fixedOpeXTotal: number;     // Sum of the 6 manual buckets above
 }
 
+export interface DepartmentCostRecord {
+  id: string;                 // `${branchId}_${yearMonth}_${department}`
+  branchId: BranchId;
+  yearMonth: string;          // "YYYY-MM"
+  department: DepartmentId;   // 'DIALYSIS' | 'BLOOD_TEST' | 'XRAY' | 'USG' | 'PHYSIO' | 'CONSULTATION'
+  rent: number;
+  electricity: number;
+  staffing: number;
+  consumables: number;
+  licensing: number;
+  other: number;
+  fixedOpeXTotal: number;     // Sum of the 6 buckets for this department
+}
+
 export interface BackupPayload {
   version: string;
   exportedAt: string;
@@ -102,4 +151,5 @@ export interface BackupPayload {
   rateOverrides: BranchRateOverride[];
   dailyEntries: DailyDepartmentEntry[];
   monthlyCosts: MonthlyCostRecord[];
+  departmentCosts?: DepartmentCostRecord[];
 }

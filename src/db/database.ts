@@ -7,6 +7,7 @@ import {
   BranchRateOverride,
   DailyDepartmentEntry,
   MonthlyCostRecord,
+  DepartmentCostRecord,
   BackupPayload,
 } from '../types/schema';
 
@@ -18,6 +19,7 @@ export class ClinicDatabase extends Dexie {
   rateOverrides!: Table<BranchRateOverride, string>;
   dailyEntries!: Table<DailyDepartmentEntry, string>;
   monthlyCosts!: Table<MonthlyCostRecord, string>;
+  departmentCosts!: Table<DepartmentCostRecord, string>;
   meta!: Table<{ key: string; value: any }, string>;
 
   constructor() {
@@ -32,11 +34,15 @@ export class ClinicDatabase extends Dexie {
       monthlyCosts: 'id, branchId, yearMonth, [branchId+yearMonth]',
       meta: 'key',
     });
+
+    this.version(2).stores({
+      departmentCosts: 'id, branchId, yearMonth, department, [branchId+yearMonth], [branchId+yearMonth+department]',
+    });
   }
 
   async exportToJsonBackup(): Promise<string> {
     const payload: BackupPayload = {
-      version: '1.0.0',
+      version: '2.0.0',
       exportedAt: new Date().toISOString(),
       branches: await this.branches.toArray(),
       capacityLogs: await this.capacityLogs.toArray(),
@@ -45,6 +51,7 @@ export class ClinicDatabase extends Dexie {
       rateOverrides: await this.rateOverrides.toArray(),
       dailyEntries: await this.dailyEntries.toArray(),
       monthlyCosts: await this.monthlyCosts.toArray(),
+      departmentCosts: await this.departmentCosts.toArray(),
     };
     return JSON.stringify(payload, null, 2);
   }
@@ -64,6 +71,7 @@ export class ClinicDatabase extends Dexie {
         this.rateOverrides,
         this.dailyEntries,
         this.monthlyCosts,
+        this.departmentCosts,
         this.meta,
       ],
       async () => {
@@ -75,6 +83,7 @@ export class ClinicDatabase extends Dexie {
           this.rateOverrides.clear(),
           this.dailyEntries.clear(),
           this.monthlyCosts.clear(),
+          this.departmentCosts.clear(),
         ]);
         if (data.branches?.length) await this.branches.bulkAdd(data.branches);
         if (data.capacityLogs?.length) await this.capacityLogs.bulkAdd(data.capacityLogs);
@@ -83,6 +92,7 @@ export class ClinicDatabase extends Dexie {
         if (data.rateOverrides?.length) await this.rateOverrides.bulkAdd(data.rateOverrides);
         if (data.dailyEntries?.length) await this.dailyEntries.bulkAdd(data.dailyEntries);
         if (data.monthlyCosts?.length) await this.monthlyCosts.bulkAdd(data.monthlyCosts);
+        if (data.departmentCosts?.length) await this.departmentCosts.bulkAdd(data.departmentCosts);
         await this.meta.put({ key: 'isSampleDataLoaded', value: true });
         await this.meta.put({ key: 'isEdited', value: true });
       }

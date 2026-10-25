@@ -1,8 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/database';
 import { useAppStore } from '../store/useAppStore';
 import { ServiceCatalogItem, DailyDepartmentEntry, BranchId } from '../types/schema';
+import { triggerAutoSync } from '../db/cloudSync';
+import { downloadExcelImportTemplate } from '../engine/exportEngine';
+import { importExcelWorkbook } from '../engine/importEngine';
 import { formatINR, formatNumber } from '../utils/formatters';
 import { parseISO, getDay, format } from 'date-fns';
 import {
@@ -13,20 +16,26 @@ import {
   AlertTriangle,
   FileSpreadsheet,
   RefreshCw,
+  Download,
+  Upload,
 } from 'lucide-react';
 
 export const DailyEntry: React.FC = () => {
-  const { branchId, setBranchId } = useAppStore();
+  const { branchId, setBranchId, setMetaStatus } = useAppStore();
+  const excelFileRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
 
+  // Live queries
+  const branches = useLiveQuery(() => db.branches.toArray(), []);
   const activeBranchId: BranchId =
-    branchId === 'ALL' ? 'br_dar_ul_shifa' : (branchId as BranchId);
+    branchId === 'ALL'
+      ? (branches && branches.length > 0 ? branches[0].id : 'br_dar_ul_shifa')
+      : (branchId as BranchId);
 
   // Selected Date state
   const [selectedDate, setSelectedDate] = useState<string>('2026-04-15');
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Live queries
-  const branches = useLiveQuery(() => db.branches.toArray(), []);
   const catalog = useLiveQuery(() => db.serviceCatalog.toArray(), []);
   const rateOverrides = useLiveQuery(
     () => db.rateOverrides.where('branchId').equals(activeBranchId).toArray(),
@@ -90,10 +99,7 @@ export const DailyEntry: React.FC = () => {
       const { rate, payoutModel, revSharePct } = getServiceInfo(srv);
       const rev = count * rate;
       let docPayout = 0;
-      if (
-        srv.department === 'CONSULTATION' &&
-        (payoutModel === 'REVENUE_SHARE' || payoutModel === 'HYBRID')
-      ) {
+      if (payoutModel === 'REVENUE_SHARE' || payoutModel === 'HYBRID') {
         docPayout = Math.round(rev * (revSharePct / 100));
       }
 
@@ -114,8 +120,7 @@ export const DailyEntry: React.FC = () => {
       const { rate, payoutModel, revSharePct } = getServiceInfo(srv);
       const rev = count * rate;
       const docPayout =
-        srv.department === 'CONSULTATION' &&
-        (payoutModel === 'REVENUE_SHARE' || payoutModel === 'HYBRID')
+        payoutModel === 'REVENUE_SHARE' || payoutModel === 'HYBRID'
           ? Math.round(rev * (revSharePct / 100))
           : 0;
 
@@ -134,6 +139,7 @@ export const DailyEntry: React.FC = () => {
 
     await db.dailyEntries.bulkPut(recordsToPut);
     await db.meta.put({ key: 'isEdited', value: true });
+    triggerAutoSync();
 
     setSaveSuccess(true);
     setTimeout(() => setSaveSuccess(false), 2500);
@@ -150,10 +156,13 @@ export const DailyEntry: React.FC = () => {
             <select
               value={activeBranchId}
               onChange={(e) => setBranchId(e.target.value)}
-              className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-semibold text-slate-800"
+              className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 text-sm font-semibold text-slate-800 cursor-pointer"
             >
-              <option value="br_dar_ul_shifa">🏥 Dar ul Shifa (DUS)</option>
-              <option value="br_saifee_diag">🔬 Saifee Diagnostics Center (SDC)</option>
+              {branches?.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name} ({b.code})
+                </option>
+              ))}
             </select>
           </div>
 
@@ -170,17 +179,65 @@ export const DailyEntry: React.FC = () => {
           </div>
         </div>
 
-        {/* Action Button */}
-        <div className="flex items-center gap-3">
+        {/* Action Buttons */}
+        <div className="flex flex-wrap items-center gap-2">
           {saveSuccess && (
             <span className="inline-flex items-center text-xs font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200 animate-pulse">
-              <CheckCircle className="w-3.5 h-3.5 mr-1" /> Saved to IndexedDB!
+              <CheckCircle className="w-3.5 h-3.5 mr-1" /> Saved!
             </span>
           )}
+
+          <button
+            type="button"
+            onClick={downloadExcelImportTemplate}
+            className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs px-3 py-2 rounded-lg transition-colors cursor-pointer"
+            title="Download blank or pre-filled Excel template"
+          >
+            <Download className="w-3.5 h-3.5 text-slate-500" />
+            <span>Template</span>
+          </button>
+
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            ref={excelFileRef}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              setImporting(true);
+              try {
+                const res = await importExcelWorkbook(file, 'MERGE');
+                if (res.success) {
+                  setMetaStatus(true, true);
+                  alert(`Imported ${res.auditCounts.dailyEntries} daily entries successfully!`);
+                } else {
+                  alert(`Import error: ${res.errors[0] || 'Invalid file format'}`);
+                }
+              } catch (err: any) {
+                alert(`Import failed: ${err.message}`);
+              } finally {
+                setImporting(false);
+                if (excelFileRef.current) excelFileRef.current.value = '';
+              }
+            }}
+            className="hidden"
+          />
+
+          <button
+            type="button"
+            onClick={() => excelFileRef.current?.click()}
+            disabled={importing}
+            className="flex items-center gap-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs px-3 py-2 rounded-lg border border-emerald-200 transition-colors cursor-pointer"
+            title="Import Excel spreadsheet into database"
+          >
+            <Upload className={`w-3.5 h-3.5 text-emerald-600 ${importing ? 'animate-spin' : ''}`} />
+            <span>{importing ? 'Importing...' : 'Import Excel'}</span>
+          </button>
+
           <button
             type="button"
             onClick={handleSaveAll}
-            className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs px-4 py-2 rounded-lg shadow-sm transition-colors"
+            className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs px-4 py-2 rounded-lg shadow-sm transition-colors cursor-pointer"
           >
             <Save className="w-4 h-4" />
             <span>Save Spreadsheet Entries</span>
