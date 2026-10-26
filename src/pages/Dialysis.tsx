@@ -8,6 +8,8 @@ import {
   DialysisSlotRecord,
   DialysisSlotType,
   BranchId,
+  DepartmentId,
+  DEPARTMENT_NAMES,
 } from '../types/schema';
 import { triggerAutoSync } from '../db/cloudSync';
 import {
@@ -32,7 +34,7 @@ import {
 } from 'lucide-react';
 
 export const Dialysis: React.FC = () => {
-  const { branchId, setBranchId } = useAppStore();
+  const { branchId, setBranchId, department, setDepartment } = useAppStore();
 
   // Month navigation state
   const [currentMonthDate, setCurrentMonthDate] = useState<Date>(new Date('2026-04-01T00:00:00'));
@@ -148,6 +150,34 @@ export const Dialysis: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Department Context Notice */}
+      {department !== 'ALL' && department !== 'DIALYSIS' && (
+        <div className="bg-sky-50 border border-sky-200 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-sky-900 shadow-xs">
+          <div className="flex items-center gap-2.5 text-xs">
+            <span className="w-2.5 h-2.5 rounded-full bg-sky-500 shrink-0"></span>
+            <span>
+              Global department filter is currently set to <strong>{DEPARTMENT_NAMES[department as DepartmentId] || department}</strong>. The Dialysis grid exclusively schedules Dialysis machine shifts.
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setDepartment('DIALYSIS')}
+              className="text-xs font-semibold px-2.5 py-1 rounded-md bg-white border border-sky-300 text-sky-800 hover:bg-sky-100 transition-colors cursor-pointer"
+            >
+              Switch filter to Dialysis
+            </button>
+            <button
+              type="button"
+              onClick={() => setDepartment('ALL')}
+              className="text-xs font-semibold px-2.5 py-1 rounded-md bg-sky-600 text-white hover:bg-sky-700 transition-colors cursor-pointer"
+            >
+              Reset to All
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Top Controls Bar */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-wrap items-center justify-between gap-4">
         {/* Branch Selector (Single branch focus for grid) */}

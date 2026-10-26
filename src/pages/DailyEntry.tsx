@@ -2,7 +2,13 @@ import React, { useState, useMemo, useRef } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/database';
 import { useAppStore } from '../store/useAppStore';
-import { ServiceCatalogItem, DailyDepartmentEntry, BranchId } from '../types/schema';
+import {
+  ServiceCatalogItem,
+  DailyDepartmentEntry,
+  BranchId,
+  DepartmentId,
+  DEPARTMENT_NAMES,
+} from '../types/schema';
 import { triggerAutoSync } from '../db/cloudSync';
 import { downloadExcelImportTemplate } from '../engine/exportEngine';
 import { importExcelWorkbook } from '../engine/importEngine';
@@ -15,13 +21,35 @@ import {
   CheckCircle,
   AlertTriangle,
   FileSpreadsheet,
-  RefreshCw,
   Download,
   Upload,
+  Activity,
+  Filter,
+  ArrowRight,
 } from 'lucide-react';
 
+const DEPARTMENT_SORT_ORDER: Record<string, number> = {
+  BLOOD_TEST: 1,
+  USG: 2,
+  XRAY: 3,
+  PHYSIO: 4,
+  CONSULTATION: 5,
+  DIALYSIS: 6,
+};
+
+const DEPT_PILLS: Array<{ id: 'ALL' | DepartmentId; label: string; icon: string }> = [
+  { id: 'ALL', label: 'All Services', icon: '🩺' },
+  { id: 'BLOOD_TEST', label: 'Blood Tests', icon: '🔬' },
+  { id: 'USG', label: 'USG / Ultrasound', icon: '📡' },
+  { id: 'XRAY', label: 'X-Ray', icon: '🩻' },
+  { id: 'PHYSIO', label: 'Physiotherapy', icon: '🏃' },
+  { id: 'CONSULTATION', label: 'Consultations', icon: '👨‍⚕️' },
+  { id: 'DIALYSIS', label: 'Dialysis Center', icon: '🩸' },
+];
+
 export const DailyEntry: React.FC = () => {
-  const { branchId, setBranchId, setMetaStatus } = useAppStore();
+  const { branchId, setBranchId, department, setDepartment, setActiveTab, setMetaStatus } =
+    useAppStore();
   const excelFileRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
 
@@ -54,11 +82,25 @@ export const DailyEntry: React.FC = () => {
     return getDay(parseISO(selectedDate)) === 0;
   }, [selectedDate]);
 
-  // Non-dialysis catalog items
-  const nonDialysisServices = useMemo(() => {
+  // Filtered & sorted services based on active department
+  const displayedServices = useMemo(() => {
     if (!catalog) return [];
-    return catalog.filter((c) => c.department !== 'DIALYSIS' && c.isActive);
-  }, [catalog]);
+
+    // Active non-dialysis catalog items
+    let items = catalog.filter((c) => c.department !== 'DIALYSIS' && c.isActive);
+
+    if (department !== 'ALL' && department !== 'DIALYSIS') {
+      items = items.filter((c) => c.department === department);
+    }
+
+    // Hierarchically sort by department order, then alphabetically by name
+    return [...items].sort((a, b) => {
+      const orderA = DEPARTMENT_SORT_ORDER[a.department] ?? 99;
+      const orderB = DEPARTMENT_SORT_ORDER[b.department] ?? 99;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.name.localeCompare(b.name);
+    });
+  }, [catalog, department]);
 
   // Working state for counts in the grid
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -88,13 +130,13 @@ export const DailyEntry: React.FC = () => {
     setCounts((prev) => ({ ...prev, [serviceId]: num }));
   };
 
-  // Compute daily totals
+  // Compute daily totals scoped to displayedServices
   const dailyTotals = useMemo(() => {
     let totalPatients = 0;
     let totalRevenue = 0;
     let totalDocPayout = 0;
 
-    nonDialysisServices.forEach((srv) => {
+    displayedServices.forEach((srv) => {
       const count = counts[srv.id] || 0;
       const { rate, payoutModel, revSharePct } = getServiceInfo(srv);
       const rev = count * rate;
@@ -109,13 +151,18 @@ export const DailyEntry: React.FC = () => {
     });
 
     return { totalPatients, totalRevenue, totalDocPayout };
-  }, [nonDialysisServices, counts, rateOverrides]);
+  }, [displayedServices, counts, rateOverrides]);
 
-  // Save all row values to IndexedDB
+  // Save displayed row values to IndexedDB
   const handleSaveAll = async () => {
+    const servicesToSave =
+      department === 'ALL'
+        ? catalog?.filter((c) => c.department !== 'DIALYSIS' && c.isActive) || []
+        : displayedServices;
+
     const recordsToPut: DailyDepartmentEntry[] = [];
 
-    nonDialysisServices.forEach((srv) => {
+    servicesToSave.forEach((srv) => {
       const count = counts[srv.id] || 0;
       const { rate, payoutModel, revSharePct } = getServiceInfo(srv);
       const rev = count * rate;
@@ -137,13 +184,20 @@ export const DailyEntry: React.FC = () => {
       });
     });
 
-    await db.dailyEntries.bulkPut(recordsToPut);
-    await db.meta.put({ key: 'isEdited', value: true });
-    triggerAutoSync();
+    if (recordsToPut.length > 0) {
+      await db.dailyEntries.bulkPut(recordsToPut);
+      await db.meta.put({ key: 'isEdited', value: true });
+      triggerAutoSync();
 
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 2500);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2500);
+    }
   };
+
+  const activeDeptLabel =
+    department === 'ALL'
+      ? 'All Outpatient'
+      : DEPARTMENT_NAMES[department as DepartmentId] || department;
 
   return (
     <div className="space-y-6">
@@ -255,138 +309,259 @@ export const DailyEntry: React.FC = () => {
         </div>
       )}
 
-      {/* Daily Totals Strip */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
-          <span className="text-xs font-semibold text-slate-500 uppercase">
-            Total Patients / Tests Logged
+      {/* Department Filter Pills Strip */}
+      <div className="bg-white rounded-xl border border-slate-200 p-3 shadow-xs">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5 uppercase tracking-wider">
+            <Filter className="w-3.5 h-3.5 text-teal-600" />
+            Filter by Department:
           </span>
-          <p className="text-2xl font-bold text-slate-900 mt-1">
-            {formatNumber(dailyTotals.totalPatients)}
-          </p>
-          <span className="text-xs text-slate-400">Excludes dialysis sessions</span>
+          {department !== 'ALL' && (
+            <button
+              type="button"
+              onClick={() => setDepartment('ALL')}
+              className="text-xs text-teal-600 hover:text-teal-700 font-semibold cursor-pointer underline"
+            >
+              Reset to All Services
+            </button>
+          )}
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {DEPT_PILLS.map((pill) => {
+            const isActive = department === pill.id;
+            const count =
+              pill.id === 'ALL'
+                ? catalog?.filter((c) => c.department !== 'DIALYSIS' && c.isActive).length || 0
+                : pill.id === 'DIALYSIS'
+                ? null
+                : catalog?.filter((c) => c.department === pill.id && c.isActive).length || 0;
 
-        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
-          <span className="text-xs font-semibold text-slate-500 uppercase">
-            Gross Department Revenue
-          </span>
-          <p className="text-2xl font-bold text-teal-700 mt-1">
-            {formatINR(dailyTotals.totalRevenue)}
-          </p>
-          <span className="text-xs text-slate-400">Sum of patient counts × applied rates</span>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
-          <span className="text-xs font-semibold text-slate-500 uppercase">
-            Doctor Share Variable Payout
-          </span>
-          <p className="text-2xl font-bold text-amber-600 mt-1">
-            {formatINR(dailyTotals.totalDocPayout)}
-          </p>
-          <span className="text-xs text-slate-400">Auto-allocated to consulting specialists</span>
+            return (
+              <button
+                key={pill.id}
+                type="button"
+                onClick={() => setDepartment(pill.id)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-teal-600 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80 hover:text-slate-900'
+                }`}
+              >
+                <span>{pill.icon}</span>
+                <span>{pill.label}</span>
+                {count !== null && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                      isActive ? 'bg-teal-700 text-white' : 'bg-slate-200 text-slate-700'
+                    }`}
+                  >
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* Inline Spreadsheet Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-          <div className="flex items-center gap-2">
-            <FileSpreadsheet className="w-4 h-4 text-teal-600" />
-            <h3 className="text-sm font-bold text-slate-800">
-              Diagnostic & Clinical Services Sheet ({format(parseISO(selectedDate), 'EEEE, dd MMMM yyyy')})
-            </h3>
+      {/* Dialysis Guidance Banner when DIALYSIS is selected */}
+      {department === 'DIALYSIS' ? (
+        <div className="bg-white rounded-xl border border-teal-200 p-8 text-center shadow-xs space-y-4">
+          <div className="w-12 h-12 mx-auto rounded-full bg-teal-50 flex items-center justify-center text-teal-600 border border-teal-100">
+            <Activity className="w-6 h-6" />
           </div>
-          <span className="text-xs text-slate-400">
-            Edit patient counts inline — revenue updates dynamically
-          </span>
+          <div className="max-w-md mx-auto">
+            <h3 className="text-base font-bold text-slate-900">
+              Dialysis is Managed via Machine & Shift Scheduling
+            </h3>
+            <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+              Dialysis operational footfall and revenue are tracked per machine, per shift slot (Morning, Afternoon, Evening) with Sunday non-working lock in the dedicated Dialysis Grid.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setActiveTab('dialysis')}
+              className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs rounded-lg transition-colors shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+            >
+              <span>Open Dialysis Slot Grid</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setDepartment('ALL')}
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-lg transition-colors cursor-pointer"
+            >
+              Show All Outpatient Services
+            </button>
+          </div>
         </div>
+      ) : (
+        <>
+          {/* Daily Totals Strip */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
+              <span className="text-xs font-semibold text-slate-500 uppercase">
+                {activeDeptLabel} Procedures Logged
+              </span>
+              <p className="text-2xl font-bold text-slate-900 mt-1">
+                {formatNumber(dailyTotals.totalPatients)}
+              </p>
+              <span className="text-xs text-slate-400">
+                {department === 'ALL'
+                  ? 'Across all 5 outpatient departments'
+                  : `Filtered exclusively to ${activeDeptLabel}`}
+              </span>
+            </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-slate-100/80 border-b border-slate-200 text-slate-700 font-semibold">
-                <th className="px-4 py-3">Department</th>
-                <th className="px-4 py-3">Service Name</th>
-                <th className="px-4 py-3">Payout Model</th>
-                <th className="px-4 py-3 text-right">Applied Rate</th>
-                <th className="px-4 py-3 text-center w-36">Patient Count</th>
-                <th className="px-4 py-3 text-right">Gross Revenue</th>
-                <th className="px-4 py-3 text-right">Doctor Payout</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {nonDialysisServices.map((srv) => {
-                const count = counts[srv.id] || 0;
-                const { rate, payoutModel, revSharePct } = getServiceInfo(srv);
-                const revenue = count * rate;
-                const docPayout =
-                  srv.department === 'CONSULTATION' &&
-                  (payoutModel === 'REVENUE_SHARE' || payoutModel === 'HYBRID')
-                    ? Math.round(revenue * (revSharePct / 100))
-                    : 0;
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
+              <span className="text-xs font-semibold text-slate-500 uppercase">
+                {activeDeptLabel} Daily Revenue
+              </span>
+              <p className="text-2xl font-bold text-teal-700 mt-1">
+                {formatINR(dailyTotals.totalRevenue)}
+              </p>
+              <span className="text-xs text-slate-400">Sum of patient counts × applied rates</span>
+            </div>
 
-                const deptColorMap: Record<string, string> = {
-                  BLOOD_TEST: 'bg-rose-50 text-rose-700 border-rose-200',
-                  XRAY: 'bg-blue-50 text-blue-700 border-blue-200',
-                  USG: 'bg-purple-50 text-purple-700 border-purple-200',
-                  PHYSIO: 'bg-amber-50 text-amber-700 border-amber-200',
-                  CONSULTATION: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-                };
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
+              <span className="text-xs font-semibold text-slate-500 uppercase">
+                {activeDeptLabel} Doctor Share Payout
+              </span>
+              <p className="text-2xl font-bold text-amber-600 mt-1">
+                {formatINR(dailyTotals.totalDocPayout)}
+              </p>
+              <span className="text-xs text-slate-400">Auto-allocated to consulting specialists</span>
+            </div>
+          </div>
 
-                return (
-                  <tr key={srv.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-4 py-2.5">
-                      <span
-                        className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold border ${
-                          deptColorMap[srv.department] || 'bg-slate-50 text-slate-700'
-                        }`}
-                      >
-                        {srv.department.replace('_', ' ')}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 font-medium text-slate-900">
-                      {srv.name}
-                      {srv.subCategory && (
-                        <span className="text-[10px] text-slate-400 ml-1.5">
-                          ({srv.subCategory})
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 text-slate-500">
-                      {srv.department === 'CONSULTATION' ? (
-                        <span className="text-[11px] font-medium text-slate-700">
-                          {payoutModel} ({revSharePct}%)
-                        </span>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-medium text-slate-800">
-                      {formatINR(rate)}
-                    </td>
-                    <td className="px-4 py-2.5 text-center">
-                      <input
-                        type="number"
-                        min="0"
-                        value={count}
-                        onChange={(e) => handleCountChange(srv.id, e.target.value)}
-                        className="w-24 text-center py-1 px-2 border border-slate-300 rounded-md font-bold text-slate-900 focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
-                      />
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-bold text-slate-900">
-                      {formatINR(revenue)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-medium text-amber-600">
-                      {docPayout > 0 ? formatINR(docPayout) : '—'}
-                    </td>
+          {/* Inline Spreadsheet Table */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2 bg-slate-50/50">
+              <div className="flex items-center gap-2">
+                <FileSpreadsheet className="w-4 h-4 text-teal-600" />
+                <h3 className="text-sm font-bold text-slate-800">
+                  {activeDeptLabel} Services Sheet ({format(parseISO(selectedDate), 'EEEE, dd MMMM yyyy')})
+                </h3>
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200">
+                  {displayedServices.length} procedures
+                </span>
+              </div>
+              <span className="text-xs text-slate-400">
+                Edit patient counts inline — revenue and doctor payouts update dynamically
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-100/80 border-b border-slate-200 text-slate-700 font-semibold">
+                    <th className="px-4 py-3">Department</th>
+                    <th className="px-4 py-3">Service Name</th>
+                    <th className="px-4 py-3">Payout Model</th>
+                    <th className="px-4 py-3 text-right">Applied Rate</th>
+                    <th className="px-4 py-3 text-center w-36">Patient Count</th>
+                    <th className="px-4 py-3 text-right">Gross Revenue</th>
+                    <th className="px-4 py-3 text-right">Doctor Payout</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {displayedServices.map((srv, index) => {
+                    const count = counts[srv.id] || 0;
+                    const { rate, payoutModel, revSharePct } = getServiceInfo(srv);
+                    const revenue = count * rate;
+                    const docPayout =
+                      payoutModel === 'REVENUE_SHARE' || payoutModel === 'HYBRID'
+                        ? Math.round(revenue * (revSharePct / 100))
+                        : 0;
+
+                    const prevDept = index > 0 ? displayedServices[index - 1].department : null;
+                    const isNewDeptGroup = department === 'ALL' && srv.department !== prevDept;
+
+                    const deptColorMap: Record<string, string> = {
+                      BLOOD_TEST: 'bg-rose-50 text-rose-700 border-rose-200',
+                      XRAY: 'bg-blue-50 text-blue-700 border-blue-200',
+                      USG: 'bg-purple-50 text-purple-700 border-purple-200',
+                      PHYSIO: 'bg-amber-50 text-amber-700 border-amber-200',
+                      CONSULTATION: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+                    };
+
+                    return (
+                      <React.Fragment key={srv.id}>
+                        {isNewDeptGroup && (
+                          <tr className="bg-slate-100/90 border-y border-slate-200">
+                            <td
+                              colSpan={7}
+                              className="px-4 py-2 font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center gap-2"
+                            >
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                  deptColorMap[srv.department] || 'bg-slate-50 text-slate-700'
+                                }`}
+                              >
+                                {srv.department.replace('_', ' ')}
+                              </span>
+                              <span>{DEPARTMENT_NAMES[srv.department] || srv.department}</span>
+                            </td>
+                          </tr>
+                        )}
+                        <tr className="hover:bg-slate-50/80 transition-colors">
+                          <td className="px-4 py-2.5">
+                            <span
+                              className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                deptColorMap[srv.department] || 'bg-slate-50 text-slate-700'
+                              }`}
+                            >
+                              {srv.department.replace('_', ' ')}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5 font-medium text-slate-900">
+                            {srv.name}
+                            {srv.subCategory && (
+                              <span className="text-[10px] text-slate-400 ml-1.5">
+                                ({srv.subCategory})
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 text-slate-500">
+                            {payoutModel === 'REVENUE_SHARE' || payoutModel === 'HYBRID' ? (
+                              <span className="text-[11px] font-medium text-slate-700">
+                                {payoutModel} ({revSharePct}%)
+                              </span>
+                            ) : payoutModel === 'FIXED_MONTHLY' ? (
+                              <span className="text-[11px] font-medium text-slate-700">FIXED</span>
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-medium text-slate-800">
+                            {formatINR(rate)}
+                          </td>
+                          <td className="px-4 py-2.5 text-center">
+                            <input
+                              type="number"
+                              min="0"
+                              value={count}
+                              onChange={(e) => handleCountChange(srv.id, e.target.value)}
+                              className="w-24 text-center py-1 px-2 border border-slate-300 rounded-md font-bold text-slate-900 focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                            />
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-bold text-slate-900">
+                            {formatINR(revenue)}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-medium text-amber-600">
+                            {docPayout > 0 ? formatINR(docPayout) : '—'}
+                          </td>
+                        </tr>
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 };

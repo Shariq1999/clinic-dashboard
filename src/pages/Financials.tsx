@@ -62,6 +62,13 @@ export const Financials: React.FC = () => {
   const [costMode, setCostMode] = useState<'CONSOLIDATED' | 'DEPARTMENT_BREAKDOWN'>('CONSOLIDATED');
   const [activeDeptTab, setActiveDeptTab] = useState<DepartmentId>('DIALYSIS');
 
+  // Synchronize activeDeptTab with global department selection
+  React.useEffect(() => {
+    if (department !== 'ALL' && DEPT_LIST.includes(department as DepartmentId)) {
+      setActiveDeptTab(department as DepartmentId);
+    }
+  }, [department]);
+
   const monthlyCosts = useLiveQuery(() => db.monthlyCosts.toArray(), []);
   const departmentCosts = useLiveQuery(() => db.departmentCosts.toArray(), []);
   const dailyEntries = useLiveQuery(() => db.dailyEntries.toArray(), []);
@@ -933,8 +940,16 @@ export const Financials: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
               {deptProfitability.map((m) => {
                 const isPositive = m.netProfit >= 0;
+                const isSelectedDept = department === m.department;
                 return (
-                  <tr key={m.department} className="hover:bg-slate-50/70 transition-colors">
+                  <tr
+                    key={m.department}
+                    className={`transition-colors ${
+                      isSelectedDept
+                        ? 'bg-teal-50/80 ring-1 ring-inset ring-teal-400'
+                        : 'hover:bg-slate-50/70'
+                    }`}
+                  >
                     <td className="px-5 py-3 font-bold text-slate-900 flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-teal-500 shrink-0"></span>
                       <span>{m.name}</span>

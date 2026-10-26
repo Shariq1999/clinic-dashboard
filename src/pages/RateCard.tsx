@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/database';
 import { useAppStore } from '../store/useAppStore';
@@ -8,6 +8,7 @@ import {
   DoctorPayoutModel,
   DepartmentId,
   BranchId,
+  DEPARTMENT_NAMES,
 } from '../types/schema';
 import { triggerAutoSync } from '../db/cloudSync';
 import { formatINR } from '../utils/formatters';
@@ -20,10 +21,20 @@ import {
   Trash2,
   HelpCircle,
   X,
+  Filter,
 } from 'lucide-react';
 
+const DEPARTMENT_SORT_ORDER: Record<string, number> = {
+  BLOOD_TEST: 1,
+  USG: 2,
+  XRAY: 3,
+  PHYSIO: 4,
+  CONSULTATION: 5,
+  DIALYSIS: 6,
+};
+
 export const RateCard: React.FC = () => {
-  const { branchId, setBranchId } = useAppStore();
+  const { branchId, setBranchId, department, setDepartment } = useAppStore();
 
   // Live data
   const catalog = useLiveQuery(() => db.serviceCatalog.toArray(), []);
@@ -37,6 +48,43 @@ export const RateCard: React.FC = () => {
     () => db.rateOverrides.where('branchId').equals(activeBranchId).toArray(),
     [activeBranchId]
   );
+
+  // Filtered & sorted master catalog based on active department
+  const sortedAndFilteredCatalog = useMemo(() => {
+    if (!catalog) return [];
+    let items = [...catalog];
+    if (department !== 'ALL') {
+      items = items.filter((c) => c.department === department);
+    }
+    return items.sort((a, b) => {
+      const orderA = DEPARTMENT_SORT_ORDER[a.department] ?? 99;
+      const orderB = DEPARTMENT_SORT_ORDER[b.department] ?? 99;
+      if (orderA !== orderB) return orderA - orderB;
+      return a.name.localeCompare(b.name);
+    });
+  }, [catalog, department]);
+
+  // Filtered & sorted overrides based on active department
+  const sortedAndFilteredOverrides = useMemo(() => {
+    if (!overrides) return [];
+    let items = [...overrides];
+    if (department !== 'ALL') {
+      items = items.filter((ov) => {
+        const catItem = catalog?.find((c) => c.id === ov.serviceId);
+        return catItem?.department === department;
+      });
+    }
+    return items.sort((a, b) => {
+      const catA = catalog?.find((c) => c.id === a.serviceId);
+      const catB = catalog?.find((c) => c.id === b.serviceId);
+      const deptA = catA?.department || 'OTHER';
+      const deptB = catB?.department || 'OTHER';
+      const orderA = DEPARTMENT_SORT_ORDER[deptA] ?? 99;
+      const orderB = DEPARTMENT_SORT_ORDER[deptB] ?? 99;
+      if (orderA !== orderB) return orderA - orderB;
+      return (catA?.name || a.serviceId).localeCompare(catB?.name || b.serviceId);
+    });
+  }, [overrides, catalog, department]);
 
   // Master rate card editing state
   const [editingCatalog, setEditingCatalog] = useState<Record<string, ServiceCatalogItem>>({});
@@ -199,17 +247,30 @@ export const RateCard: React.FC = () => {
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-              <Tag className="w-4 h-4 text-teal-600" />
-              Master Service Catalog & Standard Rate Card
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                <Tag className="w-4 h-4 text-teal-600" />
+                Master Service Catalog & Standard Rate Card
+              </h3>
+              {department !== 'ALL' && (
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200">
+                  Filtered: {DEPARTMENT_NAMES[department as DepartmentId] || department} ({sortedAndFilteredCatalog.length})
+                </span>
+              )}
+            </div>
             <p className="text-xs text-slate-500">
               Inline editable baseline pricing and doctor remuneration models applicable across all branches
             </p>
           </div>
           <button
             type="button"
-            onClick={() => setShowAddModal(true)}
+            onClick={() => {
+              setNewSrvForm((prev) => ({
+                ...prev,
+                department: department !== 'ALL' ? (department as DepartmentId) : 'BLOOD_TEST',
+              }));
+              setShowAddModal(true);
+            }}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs rounded-lg shadow-sm transition-colors cursor-pointer"
           >
             <Plus className="w-4 h-4" />
@@ -232,7 +293,7 @@ export const RateCard: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {catalog?.map((item) => {
+              {sortedAndFilteredCatalog.map((item) => {
                 const current = editingCatalog[item.id] || item;
                 const isSaved = saveSuccess === item.id;
                 const model = current.payoutModel || 'NONE';
@@ -351,10 +412,17 @@ export const RateCard: React.FC = () => {
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-              <Building className="w-4 h-4 text-teal-600" />
-              Per-Branch Rate & Doctor Payout Overrides
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                <Building className="w-4 h-4 text-teal-600" />
+                Per-Branch Rate & Doctor Payout Overrides
+              </h3>
+              {department !== 'ALL' && (
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200">
+                  Filtered: {DEPARTMENT_NAMES[department as DepartmentId] || department} ({sortedAndFilteredOverrides.length})
+                </span>
+              )}
+            </div>
             <p className="text-xs text-slate-500">
               Customize fees or contracts for specific branches without altering master catalog defaults
             </p>
@@ -391,8 +459,8 @@ export const RateCard: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {overrides && overrides.length > 0 ? (
-                overrides.map((ov) => {
+              {sortedAndFilteredOverrides && sortedAndFilteredOverrides.length > 0 ? (
+                sortedAndFilteredOverrides.map((ov) => {
                   const srv = catalog?.find((s) => s.id === ov.serviceId);
                   const isSaved = saveSuccess === ov.id;
                   const current = editingOverrides[ov.id] || ov;
@@ -513,7 +581,9 @@ export const RateCard: React.FC = () => {
               ) : (
                 <tr>
                   <td colSpan={7} className="px-4 py-6 text-center text-slate-400">
-                    No rate overrides defined for {activeBranchName}. All services use master catalog rates.
+                    {department !== 'ALL'
+                      ? `No rate overrides defined for ${activeBranchName} in ${DEPARTMENT_NAMES[department as DepartmentId] || department}.`
+                      : `No rate overrides defined for ${activeBranchName}. All services use master catalog rates.`}
                   </td>
                 </tr>
               )}
@@ -529,8 +599,8 @@ export const RateCard: React.FC = () => {
               id="add-override-select"
               className="bg-white border border-slate-300 rounded px-2.5 py-1 text-xs font-medium text-slate-800"
             >
-              {catalog
-                ?.filter(
+              {sortedAndFilteredCatalog
+                .filter(
                   (c) => !overrides?.some((ov) => ov.serviceId === c.id)
                 )
                 .map((srv) => (
