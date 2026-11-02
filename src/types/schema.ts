@@ -154,14 +154,16 @@ export interface PatientInvoiceRecord {
   personalContact: string;
 }
 
-export type OpdRoomId = 'SDC_OPD1' | 'DUS_OPD1' | 'DUS_OPD2';
+export type OpdRoomId = 'SDC_OPD1' | 'DUS_OPD1' | 'DUS_OPD2' | 'SDC_FREE_OPD';
 
 export interface OpdRoomSlotBooking {
-  id: string;                 // `${branchId}_${roomId}_${dayOfWeek}_S${slotIndex}`
+  id: string;                 // `${branchId}_${roomId}_${weekLabel}_${dayOfWeek}_S${slotIndex}`
   branchId: BranchId;
   roomId: OpdRoomId;
   roomName: string;
-  dayOfWeek: string;          // "Monday" .. "Sunday"
+  weekLabel: string;          // "Week 1", "Week 2", "Week 3", "Week 4"
+  weekNumber: number;         // 1..4
+  dayOfWeek: string;          // "Sunday" .. "Saturday"
   slotIndex: number;          // 1..6
   timeSlot: string;           // "08:00 - 10:00", etc.
   rate: number;               // Flat 2500 INR / 2 hrs

@@ -73,6 +73,9 @@ export function getGoogleAppsScriptCode(): string {
  * 7. Who has access: 'Anyone'.
  * 8. Click 'Deploy', authorize permissions, and copy the Web App URL.
  * 9. Paste the Web App URL into ClinicChain Dashboard Sync settings!
+ * 
+ * NOTE: If you already deployed earlier, click 'Deploy' > 'Manage deployments' > 
+ * Edit (pencil icon) > select 'Version: New version' > click 'Deploy'.
  */
 
 function doPost(e) {
@@ -81,6 +84,25 @@ function doPost(e) {
     var data = JSON.parse(rawText);
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     
+    // Automatically delete/archive obsolete legacy tabs to match the 5-tab Excel format
+    if (data.formatToMatchExcel) {
+      var obsoleteTabs = [
+        'Sheet1',
+        'RateCard_Consultation',
+        'Daily_Dept_Revenue',
+        'Dialysis_Slots',
+        'Costs_Per_Lab',
+        'Dar_Al_Shifa',
+        'Saifee_Diagnostic_Centre'
+      ];
+      obsoleteTabs.forEach(function(oldName) {
+        var oldSheet = ss.getSheetByName(oldName);
+        if (oldSheet && ss.getSheets().length > 1) {
+          try { ss.deleteSheet(oldSheet); } catch(ex) {}
+        }
+      });
+    }
+
     function writeTab(sheetName, rows) {
       if (!rows || !rows.length) return;
       var sheet = ss.getSheetByName(sheetName);
@@ -102,35 +124,40 @@ function doPost(e) {
       }
       
       sheet.getRange(1, 1, matrix.length, headers.length).setValues(matrix);
-      // Format Header row
+      // Format Header row matching Excel theme
       sheet.getRange(1, 1, 1, headers.length)
         .setFontWeight("bold")
         .setBackground("#0F766E")
         .setFontColor("#FFFFFF");
+      sheet.setFrozenRows(1);
       sheet.autoResizeColumns(1, headers.length);
     }
 
-    if (data.Dar_Al_Shifa && data.Dar_Al_Shifa.length) {
-      writeTab('Dar_Al_Shifa', data.Dar_Al_Shifa);
-    }
-    if (data.Saifee_Diagnostic_Centre && data.Saifee_Diagnostic_Centre.length) {
-      writeTab('Saifee_Diagnostic_Centre', data.Saifee_Diagnostic_Centre);
-    }
-    if (data.OPD_Rooms && data.OPD_Rooms.length) {
-      writeTab('OPD_Rooms', data.OPD_Rooms);
-    }
-    if (data.Dialysis_slots && data.Dialysis_slots.length) {
-      writeTab('Dialysis_slots', data.Dialysis_slots);
-    }
-    if (data.Costs_per_lab && data.Costs_per_lab.length) {
-      writeTab('Costs_per_lab', data.Costs_per_lab);
-    }
+    // 1. Dar Al Shifa
+    var dusData = data['Dar Al Shifa'] || data.Dar_Al_Shifa;
+    if (dusData && dusData.length) writeTab('Dar Al Shifa', dusData);
 
-    var countsSummary = "Dar Al Shifa: " + (data.Dar_Al_Shifa ? data.Dar_Al_Shifa.length : 0) +
-      ", Saifee: " + (data.Saifee_Diagnostic_Centre ? data.Saifee_Diagnostic_Centre.length : 0) +
-      ", OPD: " + (data.OPD_Rooms ? data.OPD_Rooms.length : 0) +
-      ", Dialysis: " + (data.Dialysis_slots ? data.Dialysis_slots.length : 0) +
-      ", Costs: " + (data.Costs_per_lab ? data.Costs_per_lab.length : 0);
+    // 2. Saifee Diagnostic Centre
+    var sdcData = data['Saifee Diagnostic Centre'] || data.Saifee_Diagnostic_Centre;
+    if (sdcData && sdcData.length) writeTab('Saifee Diagnostic Centre', sdcData);
+
+    // 3. OPD_Rooms
+    var opdData = data['OPD_Rooms'] || data.OPD_Rooms;
+    if (opdData && opdData.length) writeTab('OPD_Rooms', opdData);
+
+    // 4. Dialysis_slots
+    var diaData = data['Dialysis_slots'] || data.Dialysis_slots;
+    if (diaData && diaData.length) writeTab('Dialysis_slots', diaData);
+
+    // 5. Costs_per_lab
+    var cstData = data['Costs_per_lab'] || data.Costs_per_lab;
+    if (cstData && cstData.length) writeTab('Costs_per_lab', cstData);
+
+    var countsSummary = "Dar Al Shifa: " + (dusData ? dusData.length : 0) +
+      ", Saifee: " + (sdcData ? sdcData.length : 0) +
+      ", OPD: " + (opdData ? opdData.length : 0) +
+      ", Dialysis: " + (diaData ? diaData.length : 0) +
+      ", Costs: " + (cstData ? cstData.length : 0);
 
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
@@ -166,11 +193,16 @@ function doGet(e) {
       return result;
     }
 
+    var dus = readTab('Dar Al Shifa').length ? readTab('Dar Al Shifa') : readTab('Dar_Al_Shifa');
+    var sdc = readTab('Saifee Diagnostic Centre').length ? readTab('Saifee Diagnostic Centre') : readTab('Saifee_Diagnostic_Centre');
+
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
       title: ss.getName(),
-      Dar_Al_Shifa: readTab('Dar_Al_Shifa'),
-      Saifee_Diagnostic_Centre: readTab('Saifee_Diagnostic_Centre'),
+      'Dar Al Shifa': dus,
+      Dar_Al_Shifa: dus,
+      'Saifee Diagnostic Centre': sdc,
+      Saifee_Diagnostic_Centre: sdc,
       OPD_Rooms: readTab('OPD_Rooms'),
       Dialysis_slots: readTab('Dialysis_slots'),
       Costs_per_lab: readTab('Costs_per_lab'),
@@ -190,7 +222,9 @@ function doGet(e) {
 // Prepares tabular payloads matching the 5 clinical tabs
 // ----------------------------------------------------------------------
 export async function prepareGoogleSheetsPayload(): Promise<{
+  'Dar Al Shifa': any[];
   Dar_Al_Shifa: any[];
+  'Saifee Diagnostic Centre': any[];
   Saifee_Diagnostic_Centre: any[];
   OPD_Rooms: any[];
   Dialysis_slots: any[];
@@ -207,7 +241,7 @@ export async function prepareGoogleSheetsPayload(): Promise<{
   const branchCodeMap = new Map(branches.map((b) => [b.id, b.code]));
   const branchNameMap = new Map(branches.map((b) => [b.id, b.name]));
 
-  // 1. Dar_Al_Shifa (Invoices)
+  // 1. Dar Al Shifa (Invoices)
   const dusInvoices = invoices.filter((i) => i.branchId === 'br_dar_ul_shifa');
   const dusRows = dusInvoices.map((inv, idx) => ({
     'Sr. no.': inv.srNo || idx + 1,
@@ -220,7 +254,7 @@ export async function prepareGoogleSheetsPayload(): Promise<{
     'Personal contact': inv.personalContact,
   }));
 
-  // 2. Saifee_Diagnostic_Centre (Invoices)
+  // 2. Saifee Diagnostic Centre (Invoices)
   const sdcInvoices = invoices.filter((i) => i.branchId === 'br_saifee_diag');
   const sdcRows = sdcInvoices.map((inv, idx) => ({
     'Sr. no.': inv.srNo || idx + 1,
@@ -233,27 +267,31 @@ export async function prepareGoogleSheetsPayload(): Promise<{
     'Personal contact': inv.personalContact,
   }));
 
-  // 3. OPD_Rooms
+  // 3. OPD_Rooms (Weekly tables)
   const groupedOpd = new Map<string, Record<string, string>>();
   opdSlots.forEach((slot) => {
-    const key = `${slot.roomName}__${slot.dayOfWeek}`;
+    const wk = slot.weekLabel || 'Week 1';
+    const key = `${wk}__${slot.roomName}__${slot.dayOfWeek}`;
     const existing = groupedOpd.get(key) || {
+      Week: wk,
       OPD_Room: slot.roomName,
       Day_of_Week: slot.dayOfWeek,
     };
-    existing[slot.timeSlot] = slot.doctorName ? `${slot.doctorName} (${slot.specialty || ''})` : 'Available';
+    existing[slot.timeSlot.replace(' AM', '').replace(' PM', '').trim()] = slot.doctorName || 'Available';
+    existing[slot.timeSlot] = slot.doctorName || 'Available';
     groupedOpd.set(key, existing);
   });
 
   const opdRows = Array.from(groupedOpd.values()).map((row) => ({
+    Week: row.Week,
     OPD_Room: row.OPD_Room,
     Day_of_Week: row.Day_of_Week,
-    '08:00 - 10:00': row['08:00 AM - 10:00 AM'] || 'Available',
-    '10:00 - 12:00': row['10:00 AM - 12:00 PM'] || 'Available',
-    '12:00 - 14:00': row['12:00 PM - 02:00 PM'] || 'Available',
-    '14:00 - 16:00': row['02:00 PM - 04:00 PM'] || 'Available',
-    '16:00 - 18:00': row['04:00 PM - 06:00 PM'] || 'Available',
-    '18:00 - 20:00': row['06:00 PM - 08:00 PM'] || 'Available',
+    '08:00 - 10:00': row['08:00 - 10:00'] || row['08:00 AM - 10:00 AM'] || 'Available',
+    '10:00 - 12:00': row['10:00 - 12:00'] || row['10:00 AM - 12:00 PM'] || 'Available',
+    '12:00 - 14:00': row['12:00 - 14:00'] || row['12:00 PM - 02:00 PM'] || 'Available',
+    '14:00 - 16:00': row['14:00 - 16:00'] || row['02:00 PM - 04:00 PM'] || 'Available',
+    '16:00 - 18:00': row['16:00 - 18:00'] || row['04:00 PM - 06:00 PM'] || 'Available',
+    '18:00 - 20:00': row['18:00 - 20:00'] || row['06:00 PM - 08:00 PM'] || 'Available',
     Rate_Per_2Hrs: 2500,
   }));
 
@@ -348,7 +386,9 @@ export async function prepareGoogleSheetsPayload(): Promise<{
   });
 
   return {
+    'Dar Al Shifa': dusRows,
     Dar_Al_Shifa: dusRows,
+    'Saifee Diagnostic Centre': sdcRows,
     Saifee_Diagnostic_Centre: sdcRows,
     OPD_Rooms: opdRows,
     Dialysis_slots: dialysisRows,
@@ -476,7 +516,7 @@ export async function pushToGoogleSheets(): Promise<{ success: boolean; message:
 
       return {
         success: true,
-        message: resJson.message || 'Successfully updated Google Sheets tabs: Dialysis_Slots, RateCard_Consultation, Costs_Per_Lab!',
+        message: resJson.message || 'Successfully updated Google Sheets 5 clinical tabs!',
       };
     } catch (err: any) {
       return {
@@ -494,6 +534,70 @@ export async function pushToGoogleSheets(): Promise<{ success: boolean; message:
       success: false,
       message: 'Direct Sheets API batch update requires Google Apps Script Web App for seamless client-side writes.',
     };
+  }
+
+  return { success: false, message: 'Unsupported Google Sheets sync method.' };
+}
+
+// ----------------------------------------------------------------------
+// FORMAT & SYNC TO GOOGLE SHEETS (MATCH EXCEL TEMPLATE)
+// Re-initializes, removes obsolete sheets, and formats Google Sheets
+// into the exact 5 tabs matching Excel with teal headers & frozen rows
+// ----------------------------------------------------------------------
+export async function formatAndSyncGoogleSheet(): Promise<{ success: boolean; message: string }> {
+  const config = getCloudSyncConfig();
+
+  if (config.googleSyncMethod === 'appsscript') {
+    if (!config.googleAppsScriptUrl?.trim()) {
+      return { success: false, message: 'Google Apps Script Web App URL is required to sync.' };
+    }
+    const payload = await prepareGoogleSheetsPayload();
+
+    try {
+      const cleanUrl = config.googleAppsScriptUrl.trim();
+      const res = await fetch(cleanUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8',
+        },
+        body: JSON.stringify({
+          ...payload,
+          formatToMatchExcel: true,
+        }),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        return {
+          success: false,
+          message: `Google Sheets Apps Script error (${res.status}): ${txt.slice(0, 150)}`,
+        };
+      }
+
+      const resJson = await res.json();
+      if (!resJson.success) {
+        return {
+          success: false,
+          message: resJson.error || 'Google Apps Script failed to format and write sheets.',
+        };
+      }
+
+      const updatedConfig: CloudSyncConfig = {
+        ...config,
+        lastSyncAt: new Date().toISOString(),
+      };
+      saveCloudSyncConfig(updatedConfig);
+
+      return {
+        success: true,
+        message: resJson.message || 'Successfully formatted and synchronized Google Sheet into the 5 clinical tabs matching Excel!',
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        message: `Sync network failure: ${err.message || 'Could not reach Google Sheets Web App.'}`,
+      };
+    }
   }
 
   return { success: false, message: 'Unsupported Google Sheets sync method.' };

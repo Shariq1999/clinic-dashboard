@@ -15,6 +15,16 @@ import {
   OpdRoomId,
 } from '../types/schema';
 import { eachDayOfInterval, parseISO, format, getDay } from 'date-fns';
+import {
+  PRELIMINARY_DUS_INVOICES,
+  PRELIMINARY_SDC_INVOICES,
+  SDC_OPD1_SCHEDULE,
+  DUS_OPD1_SCHEDULE,
+  DUS_OPD2_SCHEDULE,
+  SDC_FREE_OPD_SCHEDULE,
+  PRELIMINARY_DIALYSIS_ROSTER,
+  PRELIMINARY_PHYSIO_MODULES,
+} from './preliminaryClinicData';
 
 // Deterministic PRNG (Mulberry32) so sample data is identical on every reset
 function createPrng(seed: number) {
@@ -81,6 +91,9 @@ export const MASTER_CATALOG: ServiceCatalogItem[] = [
   { id: 'srv_physio_basic', department: 'PHYSIO', name: 'Basic Session', defaultRate: 500, payoutModel: 'NONE', defaultRevSharePct: 0, defaultFixedMonthlyFee: 0, isActive: true },
   { id: 'srv_physio_adv', department: 'PHYSIO', name: 'Advanced / Therapeutic', defaultRate: 800, payoutModel: 'NONE', defaultRevSharePct: 0, defaultFixedMonthlyFee: 0, isActive: true },
   { id: 'srv_physio_neuro', department: 'PHYSIO', name: 'Neuro / Rehab', defaultRate: 1000, payoutModel: 'NONE', defaultRevSharePct: 0, defaultFixedMonthlyFee: 0, isActive: true },
+  { id: 'srv_physio_mod1', department: 'PHYSIO', name: 'Physiotherapy Module 1 (Exercise, 30 min)', defaultRate: 500, payoutModel: 'NONE', defaultRevSharePct: 0, defaultFixedMonthlyFee: 0, isActive: true },
+  { id: 'srv_physio_mod2', department: 'PHYSIO', name: 'Physiotherapy Module 2 (Exercise + 1 Modality, 60 min)', defaultRate: 1000, payoutModel: 'NONE', defaultRevSharePct: 0, defaultFixedMonthlyFee: 0, isActive: true },
+  { id: 'srv_physio_mod3', department: 'PHYSIO', name: 'Physiotherapy Module 3 (Exercise + 2 Modality, 90 min)', defaultRate: 1500, payoutModel: 'NONE', defaultRevSharePct: 0, defaultFixedMonthlyFee: 0, isActive: true },
   // 6. CONSULTANT DOCTORS (with Revenue Share, Fixed, and Hybrid payouts)
   {
     id: 'srv_con_gp',
@@ -369,93 +382,90 @@ export async function seedDatabase(forceReset = false): Promise<void> {
     departmentCosts.push(...splitMonthlyCostToDepartments(mc));
   });
 
-  // Generate sample patient invoices for both centers
+  // Ingest preliminary real clinic patient invoices
   const patientInvoices: PatientInvoiceRecord[] = [];
-  const patientNames = [
-    { name: 'Fatima Khan', gender: '48 / F', contact: '+91 98201 12345' },
-    { name: 'Mohammed Siddiqui', gender: '54 / M', contact: '+91 98202 23456' },
-    { name: 'Ayesha Shaikh', gender: '36 / F', contact: '+91 98203 34567' },
-    { name: 'Zoya Sayed', gender: '29 / F', contact: '+91 98204 45678' },
-    { name: 'Imran Merchant', gender: '62 / M', contact: '+91 98205 56789' },
-    { name: 'Yusuf Patel', gender: '45 / M', contact: '+91 98206 67890' },
-    { name: 'Zainab Memon', gender: '51 / F', contact: '+91 98207 78901' },
-    { name: 'Bilal Qureshi', gender: '39 / M', contact: '+91 98208 89012' },
-    { name: 'Mariam Ansari', gender: '67 / F', contact: '+91 98209 90123' },
-    { name: 'Tariq Chougule', gender: '41 / M', contact: '+91 98210 01234' },
-    { name: 'Shabana Kazi', gender: '33 / F', contact: '+91 98211 12345' },
-    { name: 'Arif Dalvi', gender: '58 / M', contact: '+91 98212 23456' },
-  ];
 
-  const times = ['08:45 AM', '09:15 AM', '10:00 AM', '10:30 AM', '11:15 AM', '12:00 PM', '02:30 PM', '03:45 PM', '04:15 PM', '05:00 PM', '06:15 PM', '07:30 PM'];
-  const amounts = [300, 500, 600, 900, 1200, 1500, 1800, 2200, 2500];
-
-  MASTER_BRANCHES.forEach((b) => {
-    for (let i = 0; i < 24; i++) {
-      const p = patientNames[i % patientNames.length];
-      const invNum = `INV-${b.code}-2026-${String(1001 + i).padStart(5, '0')}`;
-      const umrNum = `UMR-${b.code}-${String(5001 + i).padStart(5, '0')}`;
-      const timeOfBill = `2026-07-${String((i % 28) + 1).padStart(2, '0')} ${times[i % times.length]}`;
-      const netAmt = amounts[i % amounts.length];
-
-      patientInvoices.push({
-        id: `${b.id}_${invNum}`,
-        branchId: b.id,
-        srNo: i + 1,
-        invoiceNumber: invNum,
-        timeOfBill,
-        netAmt,
-        umr: umrNum,
-        patientName: p.name,
-        ageGender: p.gender,
-        personalContact: p.contact,
-      });
-    }
+  PRELIMINARY_DUS_INVOICES.forEach((inv) => {
+    patientInvoices.push({
+      id: `br_dar_ul_shifa_${inv.invoiceNumber}`,
+      branchId: 'br_dar_ul_shifa',
+      srNo: inv.srNo,
+      invoiceNumber: inv.invoiceNumber,
+      timeOfBill: inv.timeOfBill,
+      netAmt: inv.netAmt,
+      umr: inv.umr,
+      patientName: inv.patientName,
+      ageGender: inv.ageGender,
+      personalContact: inv.personalContact,
+    });
   });
 
-  // Generate OPD room slot booking schedule (2500/2 hrs, 6 slots from 8am to 8pm, 7 days/week)
+  PRELIMINARY_SDC_INVOICES.forEach((inv) => {
+    patientInvoices.push({
+      id: `br_saifee_diag_${inv.invoiceNumber}`,
+      branchId: 'br_saifee_diag',
+      srNo: inv.srNo,
+      invoiceNumber: inv.invoiceNumber,
+      timeOfBill: inv.timeOfBill,
+      netAmt: inv.netAmt,
+      umr: inv.umr,
+      patientName: inv.patientName,
+      ageGender: inv.ageGender,
+      personalContact: inv.personalContact,
+    });
+  });
+
+  // Generate weekly OPD room slot booking schedules (2500/2 hrs, 6 slots from 8am to 8pm, 7 days/week)
+  // Instead of a single table, there is one table for each week!
   const opdRoomSlots: OpdRoomSlotBooking[] = [];
-  const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const weeks = [
+    { label: 'Week 1', num: 1 },
+    { label: 'Week 2', num: 2 },
+    { label: 'Week 3', num: 3 },
+    { label: 'Week 4', num: 4 },
+  ];
+  const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const opdTimeSlots = [
-    '08:00 AM - 10:00 AM',
-    '10:00 AM - 12:00 PM',
-    '12:00 PM - 02:00 PM',
-    '02:00 PM - 04:00 PM',
-    '04:00 PM - 06:00 PM',
-    '06:00 PM - 08:00 PM',
+    { slotIdx: 1, key: '08:00 - 10:00', label: '08:00 AM - 10:00 AM' },
+    { slotIdx: 2, key: '10:00 - 12:00', label: '10:00 AM - 12:00 PM' },
+    { slotIdx: 3, key: '12:00 - 14:00', label: '12:00 PM - 02:00 PM' },
+    { slotIdx: 4, key: '14:00 - 16:00', label: '02:00 PM - 04:00 PM' },
+    { slotIdx: 5, key: '16:00 - 18:00', label: '04:00 PM - 06:00 PM' },
+    { slotIdx: 6, key: '18:00 - 20:00', label: '06:00 PM - 08:00 PM' },
   ];
 
-  const opdRooms: Array<{ id: OpdRoomId; name: string; branchId: BranchId }> = [
-    { id: 'SDC_OPD1', name: 'Saifee Diagnostic Centre - OPD 1', branchId: 'br_saifee_diag' },
-    { id: 'DUS_OPD1', name: 'Dar Al Shifa - OPD 1', branchId: 'br_dar_ul_shifa' },
-    { id: 'DUS_OPD2', name: 'Dar Al Shifa - OPD 2', branchId: 'br_dar_ul_shifa' },
+  const opdRoomsList: Array<{
+    id: OpdRoomId;
+    name: string;
+    branchId: BranchId;
+    schedule: typeof SDC_OPD1_SCHEDULE;
+  }> = [
+    { id: 'SDC_OPD1', name: 'Saifee Diagnostic Centre - OPD 1', branchId: 'br_saifee_diag', schedule: SDC_OPD1_SCHEDULE },
+    { id: 'DUS_OPD1', name: 'Dar Al Shifa - OPD 1', branchId: 'br_dar_ul_shifa', schedule: DUS_OPD1_SCHEDULE },
+    { id: 'DUS_OPD2', name: 'Dar Al Shifa - OPD 2', branchId: 'br_dar_ul_shifa', schedule: DUS_OPD2_SCHEDULE },
   ];
 
-  const doctorsPool = [
-    { name: 'Dr. Z. Qureshi', specialty: 'Nephrology' },
-    { name: 'Dr. M. Ansari', specialty: 'Cardiology' },
-    { name: 'Dr. S. Merchant', specialty: 'General Physician' },
-    { name: 'Dr. A. Mehta', specialty: 'Endocrinology' },
-    { name: 'Dr. F. Pathan', specialty: 'Orthopedics' },
-    { name: 'Dr. R. Kazi', specialty: 'Urology' },
-  ];
-
-  opdRooms.forEach((room) => {
-    daysOfWeek.forEach((day, dIdx) => {
-      opdTimeSlots.forEach((slotTime, sIdx) => {
-        const isBooked = (dIdx + sIdx) % 3 !== 0;
-        const doc = isBooked ? doctorsPool[(dIdx + sIdx) % doctorsPool.length] : undefined;
-        opdRoomSlots.push({
-          id: `${room.branchId}_${room.id}_${day}_S${sIdx + 1}`,
-          branchId: room.branchId,
-          roomId: room.id,
-          roomName: room.name,
-          dayOfWeek: day,
-          slotIndex: sIdx + 1,
-          timeSlot: slotTime,
-          rate: 2500,
-          doctorName: doc?.name,
-          specialty: doc?.specialty,
-          isBooked,
+  opdRoomsList.forEach((room) => {
+    weeks.forEach((wk) => {
+      daysOfWeek.forEach((day) => {
+        const daySched = room.schedule.find((s) => s.dayOfWeek.toLowerCase() === day.toLowerCase());
+        opdTimeSlots.forEach(({ slotIdx, key, label }) => {
+          const doc = daySched?.slots[key as keyof typeof daySched.slots];
+          const isBooked = Boolean(doc);
+          opdRoomSlots.push({
+            id: `${room.branchId}_${room.id}_W${wk.num}_${day}_S${slotIdx}`,
+            branchId: room.branchId,
+            roomId: room.id,
+            roomName: room.name,
+            weekLabel: wk.label,
+            weekNumber: wk.num,
+            dayOfWeek: day,
+            slotIndex: slotIdx,
+            timeSlot: label,
+            rate: 2500,
+            doctorName: doc || undefined,
+            isBooked,
+          });
         });
       });
     });

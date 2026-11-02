@@ -45,7 +45,7 @@ export class ClinicDatabase extends Dexie {
 
     this.version(3).stores({
       patientInvoices: 'id, branchId, srNo, invoiceNumber, umr',
-      opdRoomSlots: 'id, branchId, roomId, dayOfWeek, [branchId+roomId+dayOfWeek]',
+      opdRoomSlots: 'id, branchId, roomId, weekLabel, weekNumber, dayOfWeek, [branchId+roomId+weekLabel+dayOfWeek]',
     });
   }
 

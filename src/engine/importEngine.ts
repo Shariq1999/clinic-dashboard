@@ -167,18 +167,24 @@ export async function importParsedSpreadsheetData(
     [];
 
   dusInvoiceRows.forEach((r, idx) => {
-    const invNum = String(r['Invoice number'] || r.invoiceNumber || r.InvoiceNumber || `INV-DUS-${idx + 1}`).trim();
-    const netAmt = Number(r['Net Amt'] ?? r.netAmt ?? r.NetAmt ?? 0);
-    const umr = String(r['UMR'] || r.umr || r.Umr || `UMR-DUS-${idx + 1}`).trim();
+    const invNum = String(
+      r['Invoice number'] || r['Invoice Number'] || r.invoiceNumber || r.InvoiceNumber || `INV-DUS-${idx + 1}`
+    ).trim();
+    const netAmt = Number(r['Net Amt'] ?? r['Net Amt(₹)'] ?? r.netAmt ?? r.NetAmt ?? 0);
+    const umr = String(r['UMR'] || r['UMR#'] || r.umr || r.Umr || `UMR-DUS-${idx + 1}`).trim();
     const patientName = String(r['Patient Name'] || r.patientName || r.PatientName || 'Anonymous Patient').trim();
-    const ageGender = String(r['Age/Gender'] || r.ageGender || r.AgeGender || '').trim();
-    const personalContact = String(r['Personal contact'] || r.personalContact || r.PersonalContact || '').trim();
-    const timeOfBill = String(r['time of Bill'] || r.timeOfBill || r.TimeOfBill || format(new Date(), 'yyyy-MM-dd HH:mm')).trim();
+    const ageGender = String(r['Age/Gender'] || r['Age / Gender'] || r.ageGender || r.AgeGender || '').trim();
+    const personalContact = String(
+      r['Personal contact'] || r['Mobile#'] || r['Doctor Name'] || r.personalContact || r.PersonalContact || ''
+    ).trim();
+    const timeOfBill = String(
+      r['time of Bill'] || r['Invoice Date & Time'] || r.timeOfBill || r.TimeOfBill || format(new Date(), 'yyyy-MM-dd HH:mm')
+    ).trim();
 
     newPatientInvoices.push({
       id: `br_dar_ul_shifa_${invNum}`,
       branchId: 'br_dar_ul_shifa',
-      srNo: Number(r['Sr. no.'] ?? r.srNo ?? idx + 1),
+      srNo: Number(r['Sr. no.'] ?? r['Sr. No'] ?? r.srNo ?? idx + 1),
       invoiceNumber: invNum,
       timeOfBill,
       netAmt,
@@ -195,23 +201,30 @@ export async function importParsedSpreadsheetData(
   const sdcInvoiceRows =
     sheetsData['Saifee Diagnostic Centre'] ||
     sheetsData['Saifee_Diagnostic_Centre'] ||
+    sheetsData['Saifee Diagnostic'] ||
     sheetsData['SaifeeDiagnosticCentre'] ||
     sheetsData['SDC_Invoices'] ||
     [];
 
   sdcInvoiceRows.forEach((r, idx) => {
-    const invNum = String(r['Invoice number'] || r.invoiceNumber || r.InvoiceNumber || `INV-SDC-${idx + 1}`).trim();
-    const netAmt = Number(r['Net Amt'] ?? r.netAmt ?? r.NetAmt ?? 0);
-    const umr = String(r['UMR'] || r.umr || r.Umr || `UMR-SDC-${idx + 1}`).trim();
+    const invNum = String(
+      r['Invoice number'] || r['Invoice Number'] || r.invoiceNumber || r.InvoiceNumber || `INV-SDC-${idx + 1}`
+    ).trim();
+    const netAmt = Number(r['Net Amt'] ?? r['Net Amt(₹)'] ?? r.netAmt ?? r.NetAmt ?? 0);
+    const umr = String(r['UMR'] || r['UMR#'] || r.umr || r.Umr || `UMR-SDC-${idx + 1}`).trim();
     const patientName = String(r['Patient Name'] || r.patientName || r.PatientName || 'Anonymous Patient').trim();
-    const ageGender = String(r['Age/Gender'] || r.ageGender || r.AgeGender || '').trim();
-    const personalContact = String(r['Personal contact'] || r.personalContact || r.PersonalContact || '').trim();
-    const timeOfBill = String(r['time of Bill'] || r.timeOfBill || r.TimeOfBill || format(new Date(), 'yyyy-MM-dd HH:mm')).trim();
+    const ageGender = String(r['Age/Gender'] || r['Age / Gender'] || r.ageGender || r.AgeGender || '').trim();
+    const personalContact = String(
+      r['Personal contact'] || r['Mobile#'] || r.personalContact || r.PersonalContact || ''
+    ).trim();
+    const timeOfBill = String(
+      r['time of Bill'] || r['Invoice Date & Time'] || r.timeOfBill || r.TimeOfBill || format(new Date(), 'yyyy-MM-dd HH:mm')
+    ).trim();
 
     newPatientInvoices.push({
       id: `br_saifee_diag_${invNum}`,
       branchId: 'br_saifee_diag',
-      srNo: Number(r['Sr. no.'] ?? r.srNo ?? idx + 1),
+      srNo: Number(r['Sr. no.'] ?? r['Sr. No'] ?? r.srNo ?? idx + 1),
       invoiceNumber: invNum,
       timeOfBill,
       netAmt,
@@ -224,7 +237,7 @@ export async function importParsedSpreadsheetData(
 
   // --------------------------------------------------------------------
   // 3. PARSE Tab 3: OPD_Rooms (Saifee OPD 1, Dar Al Shifa OPD 1 & OPD 2)
-  // 6 slots from 8am to 8pm, 7 days/week, 2500/2 hrs
+  // 6 slots from 8am to 8pm, 7 days/week, 2500/2 hrs, weekly tables
   // --------------------------------------------------------------------
   const opdRows =
     sheetsData['OPD_Rooms'] ||
@@ -246,6 +259,9 @@ export async function importParsedSpreadsheetData(
     const rawRoom = String(r.OPD_Room || r.Room || r.roomName || 'Saifee Diagnostic Centre - OPD 1').trim();
     const day = String(r.Day_of_Week || r.Day || r.dayOfWeek || 'Monday').trim();
     const rate = Number(r.Rate_Per_2Hrs ?? r.Rate ?? r.rate ?? 2500);
+    const weekLabel = String(r.Week || r.weekLabel || r.Week_Label || 'Week 1').trim();
+    const weekNumMatch = weekLabel.match(/\d+/);
+    const weekNumber = weekNumMatch ? parseInt(weekNumMatch[0], 10) : 1;
 
     let roomId: OpdRoomId = 'SDC_OPD1';
     let branchId = 'br_saifee_diag';
@@ -277,10 +293,12 @@ export async function importParsedSpreadsheetData(
       }
 
       newOpdRoomSlots.push({
-        id: `${branchId}_${roomId}_${day}_S${slotIdx}`,
+        id: `${branchId}_${roomId}_W${weekNumber}_${day}_S${slotIdx}`,
         branchId,
         roomId,
         roomName: rawRoom,
+        weekLabel,
+        weekNumber,
         dayOfWeek: day,
         slotIndex: slotIdx,
         timeSlot: label,

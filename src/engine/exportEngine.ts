@@ -2,6 +2,13 @@ import * as XLSX from 'xlsx';
 import { db } from '../db/database';
 import { computeDepartmentProfitability } from './financialEngine';
 import { OpdRoomId, PatientInvoiceRecord } from '../types/schema';
+import {
+  PRELIMINARY_DUS_INVOICES,
+  PRELIMINARY_SDC_INVOICES,
+  SDC_OPD1_SCHEDULE,
+  DUS_OPD1_SCHEDULE,
+  DUS_OPD2_SCHEDULE,
+} from '../db/preliminaryClinicData';
 
 // Helper to set standard auto-fit column widths
 function setColWidths(ws: XLSX.WorkSheet, data: any[]) {
@@ -27,30 +34,18 @@ function downloadCsvBlob(csvContent: string, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
-// Default sample patient invoices if database table is not yet seeded
+// Default preliminary patient invoices from clinic dataset
 function getSampleInvoices(branchCode: 'DUS' | 'SDC') {
-  const names = [
-    { name: 'Fatima Khan', gender: '48 / F', contact: '+91 98201 12345' },
-    { name: 'Mohammed Siddiqui', gender: '54 / M', contact: '+91 98202 23456' },
-    { name: 'Ayesha Shaikh', gender: '36 / F', contact: '+91 98203 34567' },
-    { name: 'Zoya Sayed', gender: '29 / F', contact: '+91 98204 45678' },
-    { name: 'Imran Merchant', gender: '62 / M', contact: '+91 98205 56789' },
-    { name: 'Yusuf Patel', gender: '45 / M', contact: '+91 98206 67890' },
-    { name: 'Zainab Memon', gender: '51 / F', contact: '+91 98207 78901' },
-    { name: 'Bilal Qureshi', gender: '39 / M', contact: '+91 98208 89012' },
-  ];
-  const times = ['08:45 AM', '09:15 AM', '10:30 AM', '11:15 AM', '02:30 PM', '04:15 PM', '05:30 PM', '06:45 PM'];
-  const amts = [300, 500, 600, 900, 1200, 1800, 2200, 2500];
-
-  return names.map((p, idx) => ({
-    'Sr. no.': idx + 1,
-    'Invoice number': `INV-${branchCode}-2026-${String(1001 + idx).padStart(5, '0')}`,
-    'time of Bill': `2026-07-${String(idx + 1).padStart(2, '0')} ${times[idx % times.length]}`,
-    'Net Amt': amts[idx % amts.length],
-    'UMR': `UMR-${branchCode}-${String(5001 + idx).padStart(5, '0')}`,
-    'Patient Name': p.name,
-    'Age/Gender': p.gender,
-    'Personal contact': p.contact,
+  const source = branchCode === 'DUS' ? PRELIMINARY_DUS_INVOICES : PRELIMINARY_SDC_INVOICES;
+  return source.map((inv) => ({
+    'Sr. no.': inv.srNo,
+    'Invoice number': inv.invoiceNumber,
+    'time of Bill': inv.timeOfBill,
+    'Net Amt': inv.netAmt,
+    'UMR': inv.umr,
+    'Patient Name': inv.patientName,
+    'Age/Gender': inv.ageGender,
+    'Personal contact': inv.personalContact,
   }));
 }
 
@@ -58,7 +53,7 @@ function getSampleInvoices(branchCode: 'DUS' | 'SDC') {
 // 1. DOWNLOAD OFFICIAL 5-TAB CLINIC IMPORT TEMPLATE (.XLSX)
 // Tab 1: Dar Al Shifa
 // Tab 2: Saifee Diagnostic Centre
-// Tab 3: OPD_Rooms (2500/2 hrs, 6 slots from 8am to 8pm, 7 days/week)
+// Tab 3: OPD_Rooms (Tables for each week, 6 slots from 8am-8pm, 7 days/week, 2500/2 hrs)
 // Tab 4: Dialysis_slots (table for each date for each center)
 // Tab 5: Costs_per_lab (Categorized monthly OPEX tables from July 2026)
 // ----------------------------------------------------------------------
@@ -82,38 +77,34 @@ export async function downloadExcelImportTemplate(): Promise<void> {
   XLSX.utils.book_append_sheet(wb, wsSdc, 'Saifee Diagnostic Centre');
 
   // --------------------------------------------------------------------
-  // Tab 3: OPD_Rooms (Tables for SDC OPD 1, DUS OPD 1, DUS OPD 2)
-  // Rate: 2500/2 hrs, 6 slots (8am-8pm), 7 days/week
+  // Tab 3: OPD_Rooms (Weekly tables for SDC OPD 1, DUS OPD 1, DUS OPD 2)
+  // Rate: 2500/2 hrs, 6 slots (8am-8pm), 7 days/week, one table for each week!
   // --------------------------------------------------------------------
-  const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const opdRoomsList: Array<{ id: OpdRoomId; name: string }> = [
-    { id: 'SDC_OPD1', name: 'Saifee Diagnostic Centre - OPD 1' },
-    { id: 'DUS_OPD1', name: 'Dar Al Shifa - OPD 1' },
-    { id: 'DUS_OPD2', name: 'Dar Al Shifa - OPD 2' },
-  ];
-
-  const doctorsSample = [
-    'Dr. Z. Qureshi (Nephrology)',
-    'Dr. M. Ansari (Cardiology)',
-    'Dr. S. Merchant (Gen. Medicine)',
-    'Dr. A. Mehta (Endocrinology)',
-    'Dr. F. Pathan (Orthopedics)',
-    'Dr. R. Kazi (Urology)',
+  const weeks = ['Week 1', 'Week 2', 'Week 3', 'Week 4'];
+  const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const opdRoomsList = [
+    { id: 'SDC_OPD1', name: 'Saifee Diagnostic Centre - OPD 1', schedule: SDC_OPD1_SCHEDULE },
+    { id: 'DUS_OPD1', name: 'Dar Al Shifa - OPD 1', schedule: DUS_OPD1_SCHEDULE },
+    { id: 'DUS_OPD2', name: 'Dar Al Shifa - OPD 2', schedule: DUS_OPD2_SCHEDULE },
   ];
 
   const opdScheduleData: any[] = [];
-  opdRoomsList.forEach((room) => {
-    daysOfWeek.forEach((day, dIdx) => {
-      opdScheduleData.push({
-        OPD_Room: room.name,
-        Day_of_Week: day,
-        '08:00 - 10:00': doctorsSample[(dIdx + 0) % doctorsSample.length],
-        '10:00 - 12:00': doctorsSample[(dIdx + 1) % doctorsSample.length],
-        '12:00 - 14:00': 'Available',
-        '14:00 - 16:00': doctorsSample[(dIdx + 3) % doctorsSample.length],
-        '16:00 - 18:00': 'Available',
-        '18:00 - 20:00': doctorsSample[(dIdx + 5) % doctorsSample.length],
-        Rate_Per_2Hrs: 2500,
+  weeks.forEach((wk) => {
+    opdRoomsList.forEach((room) => {
+      daysOfWeek.forEach((day) => {
+        const daySched = room.schedule.find((s) => s.dayOfWeek.toLowerCase() === day.toLowerCase());
+        opdScheduleData.push({
+          Week: wk,
+          OPD_Room: room.name,
+          Day_of_Week: day,
+          '08:00 - 10:00': daySched?.slots['08:00 - 10:00'] || 'Available',
+          '10:00 - 12:00': daySched?.slots['10:00 - 12:00'] || 'Available',
+          '12:00 - 14:00': daySched?.slots['12:00 - 14:00'] || 'Available',
+          '14:00 - 16:00': daySched?.slots['14:00 - 16:00'] || 'Available',
+          '16:00 - 18:00': daySched?.slots['16:00 - 18:00'] || 'Available',
+          '18:00 - 20:00': daySched?.slots['18:00 - 20:00'] || 'Available',
+          Rate_Per_2Hrs: 2500,
+        });
       });
     });
   });
@@ -123,39 +114,68 @@ export async function downloadExcelImportTemplate(): Promise<void> {
   XLSX.utils.book_append_sheet(wb, wsOpd, 'OPD_Rooms');
 
   // --------------------------------------------------------------------
-  // Tab 4: Dialysis_slots (Table for each date for each center)
+  // Tab 4: Dialysis_slots (Date-wise center-wise table with AKD roster)
   // --------------------------------------------------------------------
-  const dialysisDates = ['2026-07-01', '2026-07-02', '2026-07-03'];
-  const centers = [
-    { code: 'DUS', name: 'Dar Al Shifa' },
-    { code: 'SDC', name: 'Saifee Diagnostic Centre' },
-  ];
-
   const dialysisSlotsData: any[] = [];
-  dialysisDates.forEach((dateStr) => {
-    centers.forEach((center) => {
-      for (let m = 1; m <= 4; m++) {
-        dialysisSlotsData.push({
-          Date: dateStr,
-          Center: center.name,
-          Machine: `Machine ${m}`,
-          Shift: 'Shift 1 (08:00 - 12:00)',
-          Slot_Type: m === 2 ? 'SINGLE_USE' : 'STANDARD',
-          Applied_Rate: m === 2 ? 2200 : 1800,
-          Patient_Name: `Patient M${m}-S1`,
-          Booking_Status: 'Occupied',
-        });
-        dialysisSlotsData.push({
-          Date: dateStr,
-          Center: center.name,
-          Machine: `Machine ${m}`,
-          Shift: 'Shift 2 (12:30 - 16:30)',
-          Slot_Type: 'STANDARD',
-          Applied_Rate: 1800,
-          Patient_Name: `Patient M${m}-S2`,
-          Booking_Status: 'Occupied',
-        });
-      }
+  const activeDates = ['2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06', '2026-08-07', '2026-08-08'];
+
+  activeDates.forEach((dateStr) => {
+    const isMWF = ['2026-08-03', '2026-08-05', '2026-08-07'].includes(dateStr);
+
+    // SDC AKD 1
+    dialysisSlotsData.push({
+      Date: dateStr,
+      Center: 'Saifee Diagnostic Centre',
+      Machine: 'SDC AKD 1',
+      Shift: '08:00 - 12:00',
+      Slot_Type: 'STANDARD',
+      Applied_Rate: 1800,
+      Patient_Name: isMWF ? 'Yasmin' : 'Preeti Bawa',
+      Booking_Status: 'Occupied',
+    });
+    dialysisSlotsData.push({
+      Date: dateStr,
+      Center: 'Saifee Diagnostic Centre',
+      Machine: 'SDC AKD 1',
+      Shift: '12:00 - 16:00',
+      Slot_Type: 'STANDARD',
+      Applied_Rate: 1800,
+      Patient_Name: isMWF ? 'Hetal Rewar' : 'Suresh Jain',
+      Booking_Status: 'Occupied',
+    });
+
+    // DAS AKD 1
+    dialysisSlotsData.push({
+      Date: dateStr,
+      Center: 'Dar Al Shifa',
+      Machine: 'DAS AKD 1',
+      Shift: '08:00 - 12:00',
+      Slot_Type: 'STANDARD',
+      Applied_Rate: 1800,
+      Patient_Name: isMWF ? 'Yusuf Patel' : 'Nafisa Kagalwala',
+      Booking_Status: 'Occupied',
+    });
+    dialysisSlotsData.push({
+      Date: dateStr,
+      Center: 'Dar Al Shifa',
+      Machine: 'DAS AKD 1',
+      Shift: '12:00 - 16:00',
+      Slot_Type: 'STANDARD',
+      Applied_Rate: 1800,
+      Patient_Name: isMWF ? 'Farida Noori' : 'Shahida Khan',
+      Booking_Status: 'Occupied',
+    });
+
+    // DAS AKD 2
+    dialysisSlotsData.push({
+      Date: dateStr,
+      Center: 'Dar Al Shifa',
+      Machine: 'DAS AKD 2',
+      Shift: '08:00 - 12:00',
+      Slot_Type: 'SINGLE_USE',
+      Applied_Rate: 2200,
+      Patient_Name: isMWF ? 'Ulfat Jahan' : 'Sakina',
+      Booking_Status: 'Occupied',
     });
   });
 
@@ -169,10 +189,14 @@ export async function downloadExcelImportTemplate(): Promise<void> {
   // Columns: Departments + Total
   // --------------------------------------------------------------------
   const months = ['2026-07', '2026-08', '2026-09'];
+  const costCenters = [
+    { code: 'DUS', name: 'Dar Al Shifa' },
+    { code: 'SDC', name: 'Saifee Diagnostic Centre' },
+  ];
   const costsPerLabData: any[] = [];
 
   months.forEach((ym) => {
-    centers.forEach((center) => {
+    costCenters.forEach((center) => {
       // Consumables row
       costsPerLabData.push({
         Month: ym,
@@ -332,31 +356,34 @@ export async function exportFullExcelWorkbook(): Promise<void> {
   XLSX.utils.book_append_sheet(wb, wsSdc, 'Saifee Diagnostic Centre');
 
   // --------------------------------------------------------------------
-  // Tab 3: OPD_Rooms (Saifee OPD 1, Dar Al Shifa OPD 1 & OPD 2)
+  // Tab 3: OPD_Rooms (Saifee OPD 1, Dar Al Shifa OPD 1 & OPD 2 - Weekly Tables)
   // --------------------------------------------------------------------
   let opdExportData: any[] = [];
   if (opdSlots.length > 0) {
     const grouped = new Map<string, Record<string, string>>();
     opdSlots.forEach((slot) => {
-      const key = `${slot.roomName}__${slot.dayOfWeek}`;
+      const wk = slot.weekLabel || 'Week 1';
+      const key = `${wk}__${slot.roomName}__${slot.dayOfWeek}`;
       const existing = grouped.get(key) || {
+        Week: wk,
         OPD_Room: slot.roomName,
         Day_of_Week: slot.dayOfWeek,
       };
-      const slotHeader = slot.timeSlot.replace(' AM', '').replace(' PM', '').trim();
-      existing[slot.timeSlot] = slot.doctorName ? `${slot.doctorName} (${slot.specialty || ''})` : 'Available';
+      existing[slot.timeSlot.replace(' AM', '').replace(' PM', '').trim()] = slot.doctorName || 'Available';
+      existing[slot.timeSlot] = slot.doctorName || 'Available';
       grouped.set(key, existing);
     });
 
     opdExportData = Array.from(grouped.values()).map((row) => ({
+      Week: row.Week,
       OPD_Room: row.OPD_Room,
       Day_of_Week: row.Day_of_Week,
-      '08:00 AM - 10:00 AM': row['08:00 AM - 10:00 AM'] || 'Available',
-      '10:00 AM - 12:00 PM': row['10:00 AM - 12:00 PM'] || 'Available',
-      '12:00 PM - 02:00 PM': row['12:00 PM - 02:00 PM'] || 'Available',
-      '02:00 PM - 04:00 PM': row['02:00 PM - 04:00 PM'] || 'Available',
-      '04:00 PM - 06:00 PM': row['04:00 PM - 06:00 PM'] || 'Available',
-      '06:00 PM - 08:00 PM': row['06:00 PM - 08:00 PM'] || 'Available',
+      '08:00 - 10:00': row['08:00 - 10:00'] || row['08:00 AM - 10:00 AM'] || 'Available',
+      '10:00 - 12:00': row['10:00 - 12:00'] || row['10:00 AM - 12:00 PM'] || 'Available',
+      '12:00 - 14:00': row['12:00 - 14:00'] || row['12:00 PM - 02:00 PM'] || 'Available',
+      '14:00 - 16:00': row['14:00 - 16:00'] || row['02:00 PM - 04:00 PM'] || 'Available',
+      '16:00 - 18:00': row['16:00 - 18:00'] || row['04:00 PM - 06:00 PM'] || 'Available',
+      '18:00 - 20:00': row['18:00 - 20:00'] || row['06:00 PM - 08:00 PM'] || 'Available',
       Rate_Per_2Hrs: 2500,
     }));
   }
@@ -553,7 +580,7 @@ export async function exportSaifeeInvoicesCsv(): Promise<void> {
   downloadCsvBlob(csv, `saifee-invoices-${new Date().toISOString().slice(0, 10)}.csv`);
 }
 
-// 3.3 OPD Rooms Booking Slots CSV (Rate: 2500/2 hrs)
+// 3.3 OPD Rooms Booking Slots CSV (Rate: 2500/2 hrs, weekly tables)
 export async function exportOpdRoomsCsv(): Promise<void> {
   const opdSlots = await db.opdRoomSlots.toArray();
   let data: any[] = [];
@@ -561,24 +588,28 @@ export async function exportOpdRoomsCsv(): Promise<void> {
   if (opdSlots.length > 0) {
     const grouped = new Map<string, Record<string, string>>();
     opdSlots.forEach((slot) => {
-      const key = `${slot.roomName}__${slot.dayOfWeek}`;
+      const wk = slot.weekLabel || 'Week 1';
+      const key = `${wk}__${slot.roomName}__${slot.dayOfWeek}`;
       const existing = grouped.get(key) || {
+        Week: wk,
         OPD_Room: slot.roomName,
         Day_of_Week: slot.dayOfWeek,
       };
-      existing[slot.timeSlot] = slot.doctorName ? `${slot.doctorName} (${slot.specialty || ''})` : 'Available';
+      existing[slot.timeSlot.replace(' AM', '').replace(' PM', '').trim()] = slot.doctorName || 'Available';
+      existing[slot.timeSlot] = slot.doctorName || 'Available';
       grouped.set(key, existing);
     });
 
     data = Array.from(grouped.values()).map((row) => ({
+      Week: row.Week,
       OPD_Room: row.OPD_Room,
       Day_of_Week: row.Day_of_Week,
-      '08:00 AM - 10:00 AM': row['08:00 AM - 10:00 AM'] || 'Available',
-      '10:00 AM - 12:00 PM': row['10:00 AM - 12:00 PM'] || 'Available',
-      '12:00 PM - 02:00 PM': row['12:00 PM - 02:00 PM'] || 'Available',
-      '02:00 PM - 04:00 PM': row['02:00 PM - 04:00 PM'] || 'Available',
-      '04:00 PM - 06:00 PM': row['04:00 PM - 06:00 PM'] || 'Available',
-      '06:00 PM - 08:00 PM': row['06:00 PM - 08:00 PM'] || 'Available',
+      '08:00 - 10:00': row['08:00 - 10:00'] || row['08:00 AM - 10:00 AM'] || 'Available',
+      '10:00 - 12:00': row['10:00 - 12:00'] || row['10:00 AM - 12:00 PM'] || 'Available',
+      '12:00 - 14:00': row['12:00 - 14:00'] || row['12:00 PM - 02:00 PM'] || 'Available',
+      '14:00 - 16:00': row['14:00 - 16:00'] || row['02:00 PM - 04:00 PM'] || 'Available',
+      '16:00 - 18:00': row['16:00 - 18:00'] || row['04:00 PM - 06:00 PM'] || 'Available',
+      '18:00 - 20:00': row['18:00 - 20:00'] || row['06:00 PM - 08:00 PM'] || 'Available',
       Rate_Per_2Hrs: 2500,
     }));
   }

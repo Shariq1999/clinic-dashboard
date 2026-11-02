@@ -17,6 +17,7 @@ import {
   saveCloudSyncConfig,
   testGoogleSheetsConnection,
   pushToGoogleSheets,
+  formatAndSyncGoogleSheet,
   pullFromGoogleSheets,
   getGoogleAppsScriptCode,
   CloudSyncConfig,
@@ -276,6 +277,20 @@ export const DataExport: React.FC = () => {
     }
   };
 
+  const handleFormatAndSyncGoogleSheet = async () => {
+    setSheetsSyncStatus({ type: 'syncing', text: 'Formatting & syncing Google Sheet into the 5 Excel tabs...' });
+    const res = await formatAndSyncGoogleSheet();
+    if (res.success) {
+      const refreshed = getCloudSyncConfig();
+      setCloudConfig(refreshed);
+      setSheetsSyncStatus({ type: 'success', text: res.message });
+      setFeedback({ type: 'success', message: 'Google Sheet successfully formatted and synced with all 5 clinical tabs!' });
+    } else {
+      setSheetsSyncStatus({ type: 'error', text: res.message });
+      setFeedback({ type: 'error', message: res.message });
+    }
+  };
+
   const handlePullFromGoogleSheets = async () => {
     const proceed = window.confirm(
       'Notice: Pulling from Google Sheets will merge remote sheets (Dar Al Shifa, Saifee, OPD Rooms, Dialysis Slots, Costs per Lab) into your local browser database. Proceed?'
@@ -423,6 +438,15 @@ export const DataExport: React.FC = () => {
               <span className="text-[11px] text-slate-400 mt-1 block">
                 Deploy as Web App in your Google Sheet (Extensions &gt; Apps Script), then paste the URL here.
               </span>
+              <div className="mt-2.5 p-2.5 bg-emerald-50/80 border border-emerald-200 rounded-lg text-[11px] text-emerald-900 flex items-start gap-2">
+                <CheckCircle className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                <div>
+                  <strong>Match Excel Format:</strong> Clicking <em>Sync &amp; Format Google Sheet</em> cleans up obsolete tabs and reconfigures the exact 5 tabs: <code>Dar Al Shifa</code>, <code>Saifee Diagnostic Centre</code>, <code>OPD_Rooms</code>, <code>Dialysis_slots</code>, and <code>Costs_per_lab</code> with dark teal headers, frozen row 1, and auto-sized columns.
+                  <span className="block mt-0.5 text-emerald-700 font-medium">
+                    Important: If your Google Sheet still shows old tabs after syncing, ensure you have deployed a <strong>New Version</strong> in Google Sheets: <em>Extensions &gt; Apps Script &gt; Deploy &gt; Manage deployments &gt; Edit &gt; Version: New version &gt; Deploy</em>.
+                  </span>
+                </div>
+              </div>
             </div>
 
             <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between">
@@ -434,25 +458,37 @@ export const DataExport: React.FC = () => {
                     : 'Never Synced'}
                 </span>
               </div>
-              <div className="mt-3 flex items-center gap-2">
+              <div className="mt-3 space-y-2">
                 <button
                   type="button"
-                  onClick={handlePushToGoogleSheets}
+                  onClick={handleFormatAndSyncGoogleSheet}
                   disabled={!cloudConfig.googleAppsScriptUrl || sheetsSyncStatus.type === 'syncing'}
-                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 shadow-xs cursor-pointer"
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-colors disabled:opacity-50 shadow-xs cursor-pointer"
+                  title="Formats Google Sheet to match Excel tabs (Dar Al Shifa, Saifee, OPD Rooms, Dialysis Slots, Costs per Lab)"
                 >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>Push to Sheet</span>
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>Sync &amp; Format Google Sheet (Match Excel)</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={handlePullFromGoogleSheets}
-                  disabled={!cloudConfig.googleAppsScriptUrl || sheetsSyncStatus.type === 'syncing'}
-                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 shadow-xs cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Pull from Sheet</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handlePushToGoogleSheets}
+                    disabled={!cloudConfig.googleAppsScriptUrl || sheetsSyncStatus.type === 'syncing'}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 shadow-xs cursor-pointer"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Quick Push</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePullFromGoogleSheets}
+                    disabled={!cloudConfig.googleAppsScriptUrl || sheetsSyncStatus.type === 'syncing'}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 shadow-xs cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Pull from Sheet</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
