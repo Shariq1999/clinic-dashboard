@@ -8,6 +8,9 @@ import {
   DepartmentCostRecord,
   MonthlyCostRecord,
   DialysisSlotRecord,
+  PatientInvoiceRecord,
+  OpdRoomSlotBooking,
+  OpdRoomId,
   DepartmentId,
   DialysisSlotType,
   DoctorPayoutModel,
@@ -27,6 +30,8 @@ export interface ImportResultSummary {
     monthlyCosts: number;
     dailyEntries: number;
     dialysisSlots: number;
+    patientInvoices: number;
+    opdRoomSlots: number;
   };
   skippedSundaysCount: number;
   warnings: string[];
@@ -106,13 +111,16 @@ export async function importParsedSpreadsheetData(
   const newDeptCosts: DepartmentCostRecord[] = [];
   const newDailyEntries: DailyDepartmentEntry[] = [];
   const newDialysisSlots: DialysisSlotRecord[] = [];
+  const newPatientInvoices: PatientInvoiceRecord[] = [];
+  const newOpdRoomSlots: OpdRoomSlotBooking[] = [];
 
-  const resolveBranch = (rawCode: any): Branch => {
+  const resolveBranch = (rawCode: any, defaultId: 'br_dar_ul_shifa' | 'br_saifee_diag' = 'br_dar_ul_shifa'): Branch => {
     if (!rawCode) {
-      return existingBranches[0] || {
-        id: 'br_dar_ul_shifa',
-        code: 'DUS',
-        name: 'Dar ul Shifa',
+      const foundDefault = existingBranches.find((b) => b.id === defaultId) || existingBranches[0];
+      return foundDefault || {
+        id: defaultId,
+        code: defaultId === 'br_dar_ul_shifa' ? 'DUS' : 'SDC',
+        name: defaultId === 'br_dar_ul_shifa' ? 'Dar ul Shifa' : 'Saifee Diagnostics Center',
         location: 'Mumbai',
         isActive: true,
         sundayOpen: false,
@@ -121,6 +129,15 @@ export async function importParsedSpreadsheetData(
     const str = String(rawCode).trim().toLowerCase();
     const found = branchMap.get(str);
     if (found) return found;
+
+    if (str.includes('dar') || str.includes('shifa') || str === 'dus') {
+      const b = existingBranches.find((x) => x.code === 'DUS') || existingBranches[0];
+      if (b) return b;
+    }
+    if (str.includes('saifee') || str === 'sdc') {
+      const b = existingBranches.find((x) => x.code === 'SDC') || existingBranches[1];
+      if (b) return b;
+    }
 
     const cleanCode = String(rawCode).trim().toUpperCase();
     const newBr: Branch = {
@@ -135,136 +152,322 @@ export async function importParsedSpreadsheetData(
     branchMap.set(newBr.id.toLowerCase(), newBr);
     branchMap.set(newBr.code.toLowerCase(), newBr);
     branchMap.set(newBr.name.toLowerCase(), newBr);
-    warnings.push(`Auto-registered branch code "${cleanCode}" encountered.`);
+    warnings.push(`Auto-registered branch "${cleanCode}".`);
     return newBr;
   };
 
-  const resolveService = (rawName: any, dept: DepartmentId): ServiceCatalogItem => {
-    const str = String(rawName || '').trim().toLowerCase();
-    const found = catalogMap.get(str);
-    if (found) return found;
-
-    const cleanName = String(rawName || 'General Service').trim();
-    const newSrv: ServiceCatalogItem = {
-      id: `srv_imp_${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 24)}`,
-      name: cleanName,
-      department: dept,
-      defaultRate: 500,
-      payoutModel: 'NONE',
-      defaultRevSharePct: 0,
-      defaultFixedMonthlyFee: 0,
-      isActive: true,
-    };
-    newCatalog.push(newSrv);
-    catalogMap.set(newSrv.id.toLowerCase(), newSrv);
-    catalogMap.set(newSrv.name.toLowerCase(), newSrv);
-    warnings.push(`Added new catalog item "${cleanName}" under ${dept}.`);
-    return newSrv;
-  };
-
-  // ----------------------------------------------------
-  // 1. PARSE RateCard_Consultation (Rate Card, Consultation Revenue & Doctor Payouts)
-  // ----------------------------------------------------
-  const rateCardRows =
-    sheetsData['RateCard_Consultation'] ||
-    sheetsData['RateCard_Master'] ||
-    sheetsData['Rate Card & Consultation'] ||
-    sheetsData['Rate Card'] ||
-    sheetsData['Consultations'] ||
+  // --------------------------------------------------------------------
+  // 1. PARSE Tab 1: Dar Al Shifa (Patient Invoices)
+  // --------------------------------------------------------------------
+  const dusInvoiceRows =
+    sheetsData['Dar Al Shifa'] ||
+    sheetsData['Dar_Al_Shifa'] ||
+    sheetsData['DarAlShifa'] ||
+    sheetsData['DUS_Invoices'] ||
     [];
 
-  rateCardRows.forEach((r) => {
-    const name = String(r.Service_Name || r.serviceName || r.name || '').trim();
-    if (!name) return;
-    const dept: DepartmentId = String(r.Department || r.department || 'BLOOD_TEST').toUpperCase() as DepartmentId;
-    const existing = catalogMap.get(name.toLowerCase());
+  dusInvoiceRows.forEach((r, idx) => {
+    const invNum = String(r['Invoice number'] || r.invoiceNumber || r.InvoiceNumber || `INV-DUS-${idx + 1}`).trim();
+    const netAmt = Number(r['Net Amt'] ?? r.netAmt ?? r.NetAmt ?? 0);
+    const umr = String(r['UMR'] || r.umr || r.Umr || `UMR-DUS-${idx + 1}`).trim();
+    const patientName = String(r['Patient Name'] || r.patientName || r.PatientName || 'Anonymous Patient').trim();
+    const ageGender = String(r['Age/Gender'] || r.ageGender || r.AgeGender || '').trim();
+    const personalContact = String(r['Personal contact'] || r.personalContact || r.PersonalContact || '').trim();
+    const timeOfBill = String(r['time of Bill'] || r.timeOfBill || r.TimeOfBill || format(new Date(), 'yyyy-MM-dd HH:mm')).trim();
 
-    const defaultRate = Number(
-      r.Default_Rate ?? r.defaultRate ?? r.Consultation_Fee ?? r.rate ?? 500
-    );
-    const payoutModel = (
-      r.Payout_Model ||
-      r.payoutModel ||
-      (dept === 'CONSULTATION' ? 'REVENUE_SHARE' : 'NONE')
-    ).toUpperCase() as DoctorPayoutModel;
-
-    const srvRecord: ServiceCatalogItem = {
-      id: existing?.id || `srv_imp_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 24)}`,
-      name,
-      department: dept,
-      subCategory: r.Sub_Category || r.subCategory || existing?.subCategory,
-      defaultRate,
-      payoutModel,
-      defaultRevSharePct: Number(r.Doctor_Rev_Share_Pct ?? r.Rev_Share_Pct ?? r.defaultRevSharePct ?? 0),
-      defaultFixedMonthlyFee: Number(r.Doctor_Fixed_Monthly_Fee ?? r.Fixed_Monthly_Fee ?? r.defaultFixedMonthlyFee ?? 0),
-      isActive: true,
-    };
-    newCatalog.push(srvRecord);
-    catalogMap.set(srvRecord.id.toLowerCase(), srvRecord);
-    catalogMap.set(srvRecord.name.toLowerCase(), srvRecord);
-
-    // If row includes branch override details
-    if (r.Branch_Code || r.branchId) {
-      const br = resolveBranch(r.Branch_Code || r.branchId);
-      const overrideRate = r.Branch_Override_Rate ?? r.overrideRate;
-      if (overrideRate !== undefined && overrideRate !== '') {
-        newOverrides.push({
-          id: `${br.id}_${srvRecord.id}`,
-          branchId: br.id,
-          serviceId: srvRecord.id,
-          overrideRate: Number(overrideRate),
-          overridePayoutModel: payoutModel,
-          overrideRevSharePct: srvRecord.defaultRevSharePct,
-          overrideFixedMonthlyFee: srvRecord.defaultFixedMonthlyFee,
-        });
-      }
-    }
+    newPatientInvoices.push({
+      id: `br_dar_ul_shifa_${invNum}`,
+      branchId: 'br_dar_ul_shifa',
+      srNo: Number(r['Sr. no.'] ?? r.srNo ?? idx + 1),
+      invoiceNumber: invNum,
+      timeOfBill,
+      netAmt,
+      umr,
+      patientName,
+      ageGender,
+      personalContact,
+    });
   });
 
-  // ----------------------------------------------------
-  // 2. PARSE Costs_Per_Lab (Department and Lab Costs)
-  // ----------------------------------------------------
+  // --------------------------------------------------------------------
+  // 2. PARSE Tab 2: Saifee Diagnostic Centre (Patient Invoices)
+  // --------------------------------------------------------------------
+  const sdcInvoiceRows =
+    sheetsData['Saifee Diagnostic Centre'] ||
+    sheetsData['Saifee_Diagnostic_Centre'] ||
+    sheetsData['SaifeeDiagnosticCentre'] ||
+    sheetsData['SDC_Invoices'] ||
+    [];
+
+  sdcInvoiceRows.forEach((r, idx) => {
+    const invNum = String(r['Invoice number'] || r.invoiceNumber || r.InvoiceNumber || `INV-SDC-${idx + 1}`).trim();
+    const netAmt = Number(r['Net Amt'] ?? r.netAmt ?? r.NetAmt ?? 0);
+    const umr = String(r['UMR'] || r.umr || r.Umr || `UMR-SDC-${idx + 1}`).trim();
+    const patientName = String(r['Patient Name'] || r.patientName || r.PatientName || 'Anonymous Patient').trim();
+    const ageGender = String(r['Age/Gender'] || r.ageGender || r.AgeGender || '').trim();
+    const personalContact = String(r['Personal contact'] || r.personalContact || r.PersonalContact || '').trim();
+    const timeOfBill = String(r['time of Bill'] || r.timeOfBill || r.TimeOfBill || format(new Date(), 'yyyy-MM-dd HH:mm')).trim();
+
+    newPatientInvoices.push({
+      id: `br_saifee_diag_${invNum}`,
+      branchId: 'br_saifee_diag',
+      srNo: Number(r['Sr. no.'] ?? r.srNo ?? idx + 1),
+      invoiceNumber: invNum,
+      timeOfBill,
+      netAmt,
+      umr,
+      patientName,
+      ageGender,
+      personalContact,
+    });
+  });
+
+  // --------------------------------------------------------------------
+  // 3. PARSE Tab 3: OPD_Rooms (Saifee OPD 1, Dar Al Shifa OPD 1 & OPD 2)
+  // 6 slots from 8am to 8pm, 7 days/week, 2500/2 hrs
+  // --------------------------------------------------------------------
+  const opdRows =
+    sheetsData['OPD_Rooms'] ||
+    sheetsData['OPD Rooms'] ||
+    sheetsData['OPD_Booking_Slots'] ||
+    sheetsData['OPD'] ||
+    [];
+
+  const timeSlotsHeader = [
+    { key: '08:00 - 10:00', label: '08:00 AM - 10:00 AM', slotIdx: 1 },
+    { key: '10:00 - 12:00', label: '10:00 AM - 12:00 PM', slotIdx: 2 },
+    { key: '12:00 - 14:00', label: '12:00 PM - 02:00 PM', slotIdx: 3 },
+    { key: '14:00 - 16:00', label: '02:00 PM - 04:00 PM', slotIdx: 4 },
+    { key: '16:00 - 18:00', label: '04:00 PM - 06:00 PM', slotIdx: 5 },
+    { key: '18:00 - 20:00', label: '06:00 PM - 08:00 PM', slotIdx: 6 },
+  ];
+
+  opdRows.forEach((r) => {
+    const rawRoom = String(r.OPD_Room || r.Room || r.roomName || 'Saifee Diagnostic Centre - OPD 1').trim();
+    const day = String(r.Day_of_Week || r.Day || r.dayOfWeek || 'Monday').trim();
+    const rate = Number(r.Rate_Per_2Hrs ?? r.Rate ?? r.rate ?? 2500);
+
+    let roomId: OpdRoomId = 'SDC_OPD1';
+    let branchId = 'br_saifee_diag';
+
+    if (rawRoom.includes('Saifee') || rawRoom.includes('SDC')) {
+      roomId = 'SDC_OPD1';
+      branchId = 'br_saifee_diag';
+    } else if (rawRoom.includes('OPD 2') || rawRoom.includes('OPD2')) {
+      roomId = 'DUS_OPD2';
+      branchId = 'br_dar_ul_shifa';
+    } else {
+      roomId = 'DUS_OPD1';
+      branchId = 'br_dar_ul_shifa';
+    }
+
+    timeSlotsHeader.forEach(({ key, label, slotIdx }) => {
+      const val = String(r[key] || r[label] || '').trim();
+      const isBooked = Boolean(val && val.toLowerCase() !== 'available');
+      let doctorName: string | undefined = undefined;
+      let specialty: string | undefined = undefined;
+
+      if (isBooked) {
+        doctorName = val;
+        const match = val.match(/(.*?)\s*\((.*?)\)/);
+        if (match) {
+          doctorName = match[1].trim();
+          specialty = match[2].trim();
+        }
+      }
+
+      newOpdRoomSlots.push({
+        id: `${branchId}_${roomId}_${day}_S${slotIdx}`,
+        branchId,
+        roomId,
+        roomName: rawRoom,
+        dayOfWeek: day,
+        slotIndex: slotIdx,
+        timeSlot: label,
+        rate,
+        doctorName,
+        specialty,
+        isBooked,
+      });
+    });
+  });
+
+  // --------------------------------------------------------------------
+  // 4. PARSE Tab 4: Dialysis_slots (Date-wise tables per center)
+  // --------------------------------------------------------------------
+  const dialysisRows =
+    sheetsData['Dialysis_slots'] ||
+    sheetsData['Dialysis slots'] ||
+    sheetsData['Dialysis_Slots'] ||
+    sheetsData['Occupied_Dialysis_Slots'] ||
+    sheetsData['DialysisSlots'] ||
+    [];
+
+  dialysisRows.forEach((r, idx) => {
+    const dateStr = normalizeDateStr(r.Date || r.date);
+    if (!dateStr) {
+      warnings.push(`Dialysis_slots row #${idx + 2} has invalid or missing Date.`);
+      return;
+    }
+
+    // STRICT SUNDAY LOCK: Safety rule strictly excludes Sunday dialysis
+    if (getDay(parseISO(dateStr)) === 0) {
+      skippedSundaysCount += 1;
+      return;
+    }
+
+    const br = resolveBranch(r.Center || r.Branch_Code || r.branchId);
+
+    // Parse machine index
+    let machineIndex = 1;
+    if (r.Machine) {
+      const match = String(r.Machine).match(/\d+/);
+      if (match) machineIndex = parseInt(match[0], 10);
+    } else {
+      machineIndex = Math.max(1, parseInt(r.Machine_Index ?? r.machineIndex ?? 1, 10));
+    }
+
+    // Parse shift index
+    let slotIndex = 1;
+    if (r.Shift) {
+      const match = String(r.Shift).match(/\d+/);
+      if (match) slotIndex = parseInt(match[0], 10);
+    } else {
+      slotIndex = Math.max(1, parseInt(r.Shift_Index ?? r.slotIndex ?? 1, 10));
+    }
+
+    const slotType: DialysisSlotType = String(
+      r.Slot_Type ?? r.slotType ?? 'STANDARD'
+    ).toUpperCase() as DialysisSlotType;
+    const appliedRate = Number(r.Applied_Rate ?? r.appliedRate ?? (slotType === 'SINGLE_USE' ? 2200 : 1800));
+
+    newDialysisSlots.push({
+      id: `${br.id}_${dateStr}_M${machineIndex}_S${slotIndex}`,
+      branchId: br.id,
+      date: dateStr,
+      machineIndex,
+      slotIndex,
+      isOccupied: true,
+      slotType,
+      appliedRate,
+    });
+  });
+
+  // --------------------------------------------------------------------
+  // 5. PARSE Tab 5: Costs_per_lab (Categorized monthly OPEX from July 2026)
+  // Rows: Consumables, Manpower, Rent, Electricity, Misc, Total
+  // Columns: Dialysis, Blood_Tests, USG, X_Ray, Physiotherapy, Consultation, Branch_Total
+  // --------------------------------------------------------------------
   const costRows =
+    sheetsData['Costs_per_lab'] ||
+    sheetsData['Costs per lab'] ||
     sheetsData['Costs_Per_Lab'] ||
-    sheetsData['Costs per Lab'] ||
     sheetsData['Department_Costs'] ||
     sheetsData['Dept_Costs'] ||
     sheetsData['Lab_Costs'] ||
     [];
 
-  costRows.forEach((r, idx) => {
-    const ym = normalizeYmStr(r.Year_Month || r.yearMonth || r.Month);
-    if (!ym) {
-      warnings.push(`Costs_Per_Lab row #${idx + 2} has invalid or missing Year_Month.`);
-      return;
-    }
-    const br = resolveBranch(r.Branch_Code || r.branchId);
-    const dept: DepartmentId = String(
-      r.Lab_Department || r.department || r.Department || 'BLOOD_TEST'
-    ).toUpperCase() as DepartmentId;
+  // Two structures supported:
+  // Format A: Categorized matrix (Month, Branch, Expense_Category, Dialysis, Blood_Tests, USG, X_Ray, Physio, Consultation)
+  // Format B: Flat records (Year_Month, Branch_Code, Lab_Department, Rent, Electricity, Staffing, Consumables, Licensing, Other)
 
-    const rent = Number(r.Rent ?? r.rent ?? 0);
-    const electricity = Number(r.Electricity ?? r.electricity ?? 0);
-    const staffing = Number(r.Staffing ?? r.staffing ?? 0);
-    const consumables = Number(r.Consumables ?? r.consumables ?? 0);
-    const licensing = Number(r.Licensing ?? r.licensing ?? 0);
-    const other = Number(r.Other ?? r.other ?? 0);
-    const fixedOpeXTotal = rent + electricity + staffing + consumables + licensing + other;
+  const isCategorizedMatrix = costRows.some((r) => r.Expense_Category !== undefined);
 
-    newDeptCosts.push({
-      id: `${br.id}_${ym}_${dept}`,
-      branchId: br.id,
-      yearMonth: ym,
-      department: dept,
-      rent,
-      electricity,
-      staffing,
-      consumables,
-      licensing,
-      other,
-      fixedOpeXTotal,
+  if (isCategorizedMatrix) {
+    // Map categorized matrix rows into DepartmentCostRecord
+    const aggregatedDepts = new Map<string, DepartmentCostRecord>();
+    const deptKeys: Array<{ col: string; id: DepartmentId }> = [
+      { col: 'Dialysis', id: 'DIALYSIS' },
+      { col: 'Blood_Tests', id: 'BLOOD_TEST' },
+      { col: 'Blood Tests', id: 'BLOOD_TEST' },
+      { col: 'USG', id: 'USG' },
+      { col: 'X_Ray', id: 'XRAY' },
+      { col: 'X-Ray', id: 'XRAY' },
+      { col: 'Physiotherapy', id: 'PHYSIO' },
+      { col: 'Consultation', id: 'CONSULTATION' },
+    ];
+
+    costRows.forEach((r) => {
+      const ym = normalizeYmStr(r.Month || r.Year_Month || r.yearMonth);
+      if (!ym) return;
+
+      const br = resolveBranch(r.Branch || r.Branch_Code || r.branchId);
+      const cat = String(r.Expense_Category || '').trim().toLowerCase();
+      if (cat === 'total') return; // Skip total row, will compute sum
+
+      deptKeys.forEach(({ col, id }) => {
+        const val = Number(r[col] ?? 0);
+        if (val === 0 && r[col] === undefined) return;
+
+        const recordId = `${br.id}_${ym}_${id}`;
+        const existing = aggregatedDepts.get(recordId) || {
+          id: recordId,
+          branchId: br.id,
+          yearMonth: ym,
+          department: id,
+          rent: 0,
+          electricity: 0,
+          staffing: 0,
+          consumables: 0,
+          licensing: 0,
+          other: 0,
+          fixedOpeXTotal: 0,
+        };
+
+        if (cat.includes('consumable')) existing.consumables = val;
+        else if (cat.includes('manpower') || cat.includes('staff')) existing.staffing = val;
+        else if (cat.includes('rent')) existing.rent = val;
+        else if (cat.includes('electr')) existing.electricity = val;
+        else if (cat.includes('misc') || cat.includes('other') || cat.includes('licens')) {
+          existing.other = Math.round(val * 0.5);
+          existing.licensing = Math.round(val * 0.5);
+        }
+
+        existing.fixedOpeXTotal =
+          existing.rent + existing.electricity + existing.staffing +
+          existing.consumables + existing.licensing + existing.other;
+
+        aggregatedDepts.set(recordId, existing);
+      });
     });
-  });
+
+    aggregatedDepts.forEach((rec) => newDeptCosts.push(rec));
+  } else {
+    // Format B: Flat records
+    costRows.forEach((r, idx) => {
+      const ym = normalizeYmStr(r.Year_Month || r.yearMonth || r.Month);
+      if (!ym) {
+        warnings.push(`Costs_per_lab row #${idx + 2} has invalid or missing Month.`);
+        return;
+      }
+      const br = resolveBranch(r.Branch_Code || r.branchId);
+      const dept: DepartmentId = String(
+        r.Lab_Department || r.department || r.Department || 'BLOOD_TEST'
+      ).toUpperCase() as DepartmentId;
+
+      const rent = Number(r.Rent ?? r.rent ?? 0);
+      const electricity = Number(r.Electricity ?? r.electricity ?? 0);
+      const staffing = Number(r.Staffing ?? r.staffing ?? r.Manpower ?? 0);
+      const consumables = Number(r.Consumables ?? r.consumables ?? 0);
+      const licensing = Number(r.Licensing ?? r.licensing ?? 0);
+      const other = Number(r.Other ?? r.other ?? r.Misc ?? 0);
+      const fixedOpeXTotal = rent + electricity + staffing + consumables + licensing + other;
+
+      newDeptCosts.push({
+        id: `${br.id}_${ym}_${dept}`,
+        branchId: br.id,
+        yearMonth: ym,
+        department: dept,
+        rent,
+        electricity,
+        staffing,
+        consumables,
+        licensing,
+        other,
+        fixedOpeXTotal,
+      });
+    });
+  }
 
   // Auto-aggregate Department Costs into Monthly Costs
   const monthlyCostsMap = new Map<string, MonthlyCostRecord>();
@@ -293,111 +496,9 @@ export async function importParsedSpreadsheetData(
   });
   const newMonthlyCosts = Array.from(monthlyCostsMap.values());
 
-  // ----------------------------------------------------
-  // 3. PARSE Dialysis_Slots (Dialysis Slots Occupancy)
-  // ----------------------------------------------------
-  const dialysisRows =
-    sheetsData['Dialysis_Slots'] ||
-    sheetsData['Dialysis Slots'] ||
-    sheetsData['Occupied_Dialysis_Slots'] ||
-    sheetsData['DialysisSlots'] ||
-    [];
-
-  dialysisRows.forEach((r, idx) => {
-    const dateStr = normalizeDateStr(r.Date || r.date);
-    if (!dateStr) {
-      warnings.push(`Dialysis_Slots row #${idx + 2} has invalid or missing Date.`);
-      return;
-    }
-
-    // STRICT SUNDAY LOCK: Clinical safety policy strictly excludes Sunday dialysis
-    if (getDay(parseISO(dateStr)) === 0) {
-      skippedSundaysCount += 1;
-      return;
-    }
-
-    const br = resolveBranch(r.Branch_Code || r.branchId);
-    const machineIndex = Math.max(1, parseInt(r.Machine_Index ?? r.machineIndex ?? 1, 10));
-    const slotIndex = Math.max(1, parseInt(r.Shift_Index ?? r.slotIndex ?? 1, 10));
-    const slotType: DialysisSlotType = String(
-      r.Slot_Type ?? r.slotType ?? 'STANDARD'
-    ).toUpperCase() as DialysisSlotType;
-    const appliedRate = Number(r.Applied_Rate ?? r.appliedRate ?? 1800);
-
-    newDialysisSlots.push({
-      id: `${br.id}_${dateStr}_M${machineIndex}_S${slotIndex}`,
-      branchId: br.id,
-      date: dateStr,
-      machineIndex,
-      slotIndex,
-      isOccupied: true,
-      slotType,
-      appliedRate,
-    });
-  });
-
-  // ----------------------------------------------------
-  // 4. PARSE Daily_Dept_Revenue (if present)
-  // ----------------------------------------------------
-  const dailyRows =
-    sheetsData['Daily_Dept_Revenue'] ||
-    sheetsData['Daily_Entries'] ||
-    sheetsData['DailyRevenue'] ||
-    [];
-
-  dailyRows.forEach((r, idx) => {
-    const dateStr = normalizeDateStr(r.Date || r.date);
-    if (!dateStr) {
-      warnings.push(`Daily_Dept_Revenue row #${idx + 2} has invalid or missing Date.`);
-      return;
-    }
-
-    const br = resolveBranch(r.Branch_Code || r.branchId);
-    const dept: DepartmentId = String(r.Department || r.department || 'BLOOD_TEST').toUpperCase() as DepartmentId;
-    if (dept === 'DIALYSIS') return; // Dialysis managed via slot matrix
-
-    const srvName = String(r.Service_Name || r.serviceId || 'General Modality').trim();
-    const srv = resolveService(srvName, dept);
-    const patientCount = Math.max(0, parseInt(r.Patient_Count ?? r.patientCount ?? 1, 10));
-
-    let rate = Number(r.Applied_Rate ?? r.rate ?? 0);
-    if (rate <= 0) {
-      const ov =
-        newOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id) ||
-        existingOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id);
-      rate = ov?.overrideRate ?? srv.defaultRate;
-    }
-
-    const revenue = Number(r.Calculated_Revenue ?? r.revenue ?? patientCount * rate);
-
-    let doctorVariablePayout = Number(r.Doctor_Payout ?? r.doctorVariablePayout ?? 0);
-    if (doctorVariablePayout === 0) {
-      const ov =
-        newOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id) ||
-        existingOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id);
-      const model = ov?.overridePayoutModel ?? srv.payoutModel;
-      const revSharePct = ov?.overrideRevSharePct ?? srv.defaultRevSharePct;
-      if (model === 'REVENUE_SHARE' || model === 'HYBRID') {
-        doctorVariablePayout = Math.round(revenue * (revSharePct / 100));
-      }
-    }
-
-    newDailyEntries.push({
-      id: `${br.id}_${dateStr}_${srv.id}`,
-      branchId: br.id,
-      date: dateStr,
-      department: dept,
-      serviceId: srv.id,
-      patientCount,
-      rate,
-      revenue,
-      doctorVariablePayout,
-    });
-  });
-
-  // ----------------------------------------------------
-  // 5. ATOMIC DEXIE TRANSACTION
-  // ----------------------------------------------------
+  // --------------------------------------------------------------------
+  // 6. ATOMIC DEXIE TRANSACTION
+  // --------------------------------------------------------------------
   try {
     await db.transaction(
       'rw',
@@ -409,16 +510,20 @@ export async function importParsedSpreadsheetData(
         db.monthlyCosts,
         db.dailyEntries,
         db.dialysisSlots,
+        db.patientInvoices,
+        db.opdRoomSlots,
         db.meta,
       ],
       async () => {
         if (mode === 'OVERWRITE') {
-          if (newDailyEntries.length > 0) await db.dailyEntries.clear();
+          if (newPatientInvoices.length > 0) await db.patientInvoices.clear();
+          if (newOpdRoomSlots.length > 0) await db.opdRoomSlots.clear();
           if (newDialysisSlots.length > 0) await db.dialysisSlots.clear();
           if (newDeptCosts.length > 0) {
             await db.departmentCosts.clear();
             await db.monthlyCosts.clear();
           }
+          if (newDailyEntries.length > 0) await db.dailyEntries.clear();
           if (newCatalog.length > 0) await db.serviceCatalog.clear();
           if (newOverrides.length > 0) await db.rateOverrides.clear();
         }
@@ -430,6 +535,8 @@ export async function importParsedSpreadsheetData(
         if (newMonthlyCosts.length > 0) await db.monthlyCosts.bulkPut(newMonthlyCosts);
         if (newDailyEntries.length > 0) await db.dailyEntries.bulkPut(newDailyEntries);
         if (newDialysisSlots.length > 0) await db.dialysisSlots.bulkPut(newDialysisSlots);
+        if (newPatientInvoices.length > 0) await db.patientInvoices.bulkPut(newPatientInvoices);
+        if (newOpdRoomSlots.length > 0) await db.opdRoomSlots.bulkPut(newOpdRoomSlots);
 
         await db.meta.put({ key: 'isEdited', value: true });
       }
@@ -449,6 +556,8 @@ export async function importParsedSpreadsheetData(
         monthlyCosts: newMonthlyCosts.length,
         dailyEntries: newDailyEntries.length,
         dialysisSlots: newDialysisSlots.length,
+        patientInvoices: newPatientInvoices.length,
+        opdRoomSlots: newOpdRoomSlots.length,
       },
       skippedSundaysCount,
       warnings,
@@ -468,6 +577,8 @@ export async function importParsedSpreadsheetData(
         monthlyCosts: 0,
         dailyEntries: 0,
         dialysisSlots: 0,
+        patientInvoices: 0,
+        opdRoomSlots: 0,
       },
       skippedSundaysCount,
       warnings,
@@ -504,6 +615,8 @@ export async function importSpreadsheetFile(
         monthlyCosts: 0,
         dailyEntries: 0,
         dialysisSlots: 0,
+        patientInvoices: 0,
+        opdRoomSlots: 0,
       },
       skippedSundaysCount: 0,
       warnings: [],
@@ -513,7 +626,6 @@ export async function importSpreadsheetFile(
     };
   }
 
-  // Validate supported extensions
   const isXlsx = fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileType.includes('spreadsheetml');
   const isCsv = fileName.endsWith('.csv') || fileType.includes('csv') || fileType === 'text/plain';
 
@@ -530,6 +642,8 @@ export async function importSpreadsheetFile(
         monthlyCosts: 0,
         dailyEntries: 0,
         dialysisSlots: 0,
+        patientInvoices: 0,
+        opdRoomSlots: 0,
       },
       skippedSundaysCount: 0,
       warnings: [],
@@ -556,6 +670,8 @@ export async function importSpreadsheetFile(
         monthlyCosts: 0,
         dailyEntries: 0,
         dialysisSlots: 0,
+        patientInvoices: 0,
+        opdRoomSlots: 0,
       },
       skippedSundaysCount: 0,
       warnings: [],
@@ -584,6 +700,8 @@ export async function importSpreadsheetFile(
           monthlyCosts: 0,
           dailyEntries: 0,
           dialysisSlots: 0,
+          patientInvoices: 0,
+          opdRoomSlots: 0,
         },
         skippedSundaysCount: 0,
         warnings: [],
@@ -593,28 +711,23 @@ export async function importSpreadsheetFile(
 
     const firstRowKeys = Object.keys(rows[0]).map((k) => k.toLowerCase());
 
-    if (firstRowKeys.some((k) => k.includes('machine') || k.includes('shift') || k.includes('slot'))) {
-      sheetsData['Dialysis_Slots'] = rows;
-    } else if (firstRowKeys.some((k) => k.includes('payout') || k.includes('share') || k.includes('consultation') || (k.includes('rate') && k.includes('service')))) {
-      sheetsData['RateCard_Consultation'] = rows;
-    } else if (firstRowKeys.some((k) => k.includes('lab') || k.includes('rent') || k.includes('staffing') || k.includes('electricity') || k.includes('consumables'))) {
-      sheetsData['Costs_Per_Lab'] = rows;
-    } else if (firstRowKeys.some((k) => k.includes('patient') || k.includes('revenue') || k.includes('encounter'))) {
-      sheetsData['Daily_Dept_Revenue'] = rows;
-    } else {
-      // Fallback: check filename hints
-      if (fileName.includes('dialysis') || fileName.includes('slot')) {
-        sheetsData['Dialysis_Slots'] = rows;
-      } else if (fileName.includes('rate') || fileName.includes('consult')) {
-        sheetsData['RateCard_Consultation'] = rows;
-      } else if (fileName.includes('cost') || fileName.includes('lab') || fileName.includes('opex')) {
-        sheetsData['Costs_Per_Lab'] = rows;
+    if (firstRowKeys.some((k) => k.includes('invoice') || k.includes('umr') || k.includes('bill'))) {
+      if (fileName.includes('saifee') || fileName.includes('sdc')) {
+        sheetsData['Saifee Diagnostic Centre'] = rows;
       } else {
-        sheetsData['Daily_Dept_Revenue'] = rows;
+        sheetsData['Dar Al Shifa'] = rows;
       }
+    } else if (firstRowKeys.some((k) => k.includes('opd') || k.includes('08:00') || k.includes('rate_per'))) {
+      sheetsData['OPD_Rooms'] = rows;
+    } else if (firstRowKeys.some((k) => k.includes('machine') || k.includes('shift') || k.includes('dialysis') || k.includes('slot'))) {
+      sheetsData['Dialysis_slots'] = rows;
+    } else if (firstRowKeys.some((k) => k.includes('expense_category') || k.includes('consumables') || k.includes('manpower') || k.includes('rent'))) {
+      sheetsData['Costs_per_lab'] = rows;
+    } else {
+      sheetsData['Dialysis_slots'] = rows;
     }
   } else {
-    // Standard Multi-Sheet XLSX
+    // Multi-Sheet XLSX
     workbook.SheetNames.forEach((sheetName) => {
       const sheet = workbook.Sheets[sheetName];
       sheetsData[sheetName] = XLSX.utils.sheet_to_json(sheet);
@@ -624,5 +737,5 @@ export async function importSpreadsheetFile(
   return importParsedSpreadsheetData(sheetsData, mode);
 }
 
-// Backward-compatible alias for existing imports
+// Backward-compatible alias
 export const importExcelWorkbook = importSpreadsheetFile;

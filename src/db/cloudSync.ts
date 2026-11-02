@@ -110,26 +110,31 @@ function doPost(e) {
       sheet.autoResizeColumns(1, headers.length);
     }
 
-    if (data.Dialysis_Slots && data.Dialysis_Slots.length) {
-      writeTab('Dialysis_Slots', data.Dialysis_Slots);
+    if (data.Dar_Al_Shifa && data.Dar_Al_Shifa.length) {
+      writeTab('Dar_Al_Shifa', data.Dar_Al_Shifa);
     }
-    if (data.RateCard_Consultation && data.RateCard_Consultation.length) {
-      writeTab('RateCard_Consultation', data.RateCard_Consultation);
+    if (data.Saifee_Diagnostic_Centre && data.Saifee_Diagnostic_Centre.length) {
+      writeTab('Saifee_Diagnostic_Centre', data.Saifee_Diagnostic_Centre);
     }
-    if (data.Costs_Per_Lab && data.Costs_Per_Lab.length) {
-      writeTab('Costs_Per_Lab', data.Costs_Per_Lab);
+    if (data.OPD_Rooms && data.OPD_Rooms.length) {
+      writeTab('OPD_Rooms', data.OPD_Rooms);
     }
-    if (data.Daily_Dept_Revenue && data.Daily_Dept_Revenue.length) {
-      writeTab('Daily_Dept_Revenue', data.Daily_Dept_Revenue);
+    if (data.Dialysis_slots && data.Dialysis_slots.length) {
+      writeTab('Dialysis_slots', data.Dialysis_slots);
+    }
+    if (data.Costs_per_lab && data.Costs_per_lab.length) {
+      writeTab('Costs_per_lab', data.Costs_per_lab);
     }
 
-    var countsSummary = "Slots: " + (data.Dialysis_Slots ? data.Dialysis_Slots.length : 0) +
-      ", Rates/Consultations: " + (data.RateCard_Consultation ? data.RateCard_Consultation.length : 0) +
-      ", Lab Costs: " + (data.Costs_Per_Lab ? data.Costs_Per_Lab.length : 0);
+    var countsSummary = "Dar Al Shifa: " + (data.Dar_Al_Shifa ? data.Dar_Al_Shifa.length : 0) +
+      ", Saifee: " + (data.Saifee_Diagnostic_Centre ? data.Saifee_Diagnostic_Centre.length : 0) +
+      ", OPD: " + (data.OPD_Rooms ? data.OPD_Rooms.length : 0) +
+      ", Dialysis: " + (data.Dialysis_slots ? data.Dialysis_slots.length : 0) +
+      ", Costs: " + (data.Costs_per_lab ? data.Costs_per_lab.length : 0);
 
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
-      message: "Successfully synchronized records to Google Sheets (" + countsSummary + ")",
+      message: "Successfully synchronized 5 clinical tabs to Google Sheets (" + countsSummary + ")",
       timestamp: new Date().toISOString()
     })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
@@ -164,10 +169,11 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify({
       success: true,
       title: ss.getName(),
-      Dialysis_Slots: readTab('Dialysis_Slots'),
-      RateCard_Consultation: readTab('RateCard_Consultation'),
-      Costs_Per_Lab: readTab('Costs_Per_Lab'),
-      Daily_Dept_Revenue: readTab('Daily_Dept_Revenue'),
+      Dar_Al_Shifa: readTab('Dar_Al_Shifa'),
+      Saifee_Diagnostic_Centre: readTab('Saifee_Diagnostic_Centre'),
+      OPD_Rooms: readTab('OPD_Rooms'),
+      Dialysis_slots: readTab('Dialysis_slots'),
+      Costs_per_lab: readTab('Costs_per_lab'),
       timestamp: new Date().toISOString()
     })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
@@ -181,89 +187,172 @@ function doGet(e) {
 
 // ----------------------------------------------------------------------
 // DATA EXTRACTOR FOR GOOGLE SHEETS SYNC
-// Prepares tabular payloads matching the 3 designated sheets
+// Prepares tabular payloads matching the 5 clinical tabs
 // ----------------------------------------------------------------------
 export async function prepareGoogleSheetsPayload(): Promise<{
-  Dialysis_Slots: any[];
-  RateCard_Consultation: any[];
-  Costs_Per_Lab: any[];
-  Daily_Dept_Revenue: any[];
+  Dar_Al_Shifa: any[];
+  Saifee_Diagnostic_Centre: any[];
+  OPD_Rooms: any[];
+  Dialysis_slots: any[];
+  Costs_per_lab: any[];
 }> {
-  const [branches, slots, catalog, overrides, departmentCosts, entries] = await Promise.all([
+  const [branches, slots, departmentCosts, invoices, opdSlots] = await Promise.all([
     db.branches.toArray(),
     db.dialysisSlots.toArray(),
-    db.serviceCatalog.toArray(),
-    db.rateOverrides.toArray(),
     db.departmentCosts.toArray(),
-    db.dailyEntries.toArray(),
+    db.patientInvoices.toArray(),
+    db.opdRoomSlots.toArray(),
   ]);
 
   const branchCodeMap = new Map(branches.map((b) => [b.id, b.code]));
+  const branchNameMap = new Map(branches.map((b) => [b.id, b.name]));
 
-  // 1. Dialysis_Slots (Occupied dialysis slots)
+  // 1. Dar_Al_Shifa (Invoices)
+  const dusInvoices = invoices.filter((i) => i.branchId === 'br_dar_ul_shifa');
+  const dusRows = dusInvoices.map((inv, idx) => ({
+    'Sr. no.': inv.srNo || idx + 1,
+    'Invoice number': inv.invoiceNumber,
+    'time of Bill': inv.timeOfBill,
+    'Net Amt': inv.netAmt,
+    'UMR': inv.umr,
+    'Patient Name': inv.patientName,
+    'Age/Gender': inv.ageGender,
+    'Personal contact': inv.personalContact,
+  }));
+
+  // 2. Saifee_Diagnostic_Centre (Invoices)
+  const sdcInvoices = invoices.filter((i) => i.branchId === 'br_saifee_diag');
+  const sdcRows = sdcInvoices.map((inv, idx) => ({
+    'Sr. no.': inv.srNo || idx + 1,
+    'Invoice number': inv.invoiceNumber,
+    'time of Bill': inv.timeOfBill,
+    'Net Amt': inv.netAmt,
+    'UMR': inv.umr,
+    'Patient Name': inv.patientName,
+    'Age/Gender': inv.ageGender,
+    'Personal contact': inv.personalContact,
+  }));
+
+  // 3. OPD_Rooms
+  const groupedOpd = new Map<string, Record<string, string>>();
+  opdSlots.forEach((slot) => {
+    const key = `${slot.roomName}__${slot.dayOfWeek}`;
+    const existing = groupedOpd.get(key) || {
+      OPD_Room: slot.roomName,
+      Day_of_Week: slot.dayOfWeek,
+    };
+    existing[slot.timeSlot] = slot.doctorName ? `${slot.doctorName} (${slot.specialty || ''})` : 'Available';
+    groupedOpd.set(key, existing);
+  });
+
+  const opdRows = Array.from(groupedOpd.values()).map((row) => ({
+    OPD_Room: row.OPD_Room,
+    Day_of_Week: row.Day_of_Week,
+    '08:00 - 10:00': row['08:00 AM - 10:00 AM'] || 'Available',
+    '10:00 - 12:00': row['10:00 AM - 12:00 PM'] || 'Available',
+    '12:00 - 14:00': row['12:00 PM - 02:00 PM'] || 'Available',
+    '14:00 - 16:00': row['02:00 PM - 04:00 PM'] || 'Available',
+    '16:00 - 18:00': row['04:00 PM - 06:00 PM'] || 'Available',
+    '18:00 - 20:00': row['06:00 PM - 08:00 PM'] || 'Available',
+    Rate_Per_2Hrs: 2500,
+  }));
+
+  // 4. Dialysis_slots
   const dialysisRows = slots
     .filter((s) => s.isOccupied)
     .map((s) => ({
       Date: s.date,
-      Branch_Code: branchCodeMap.get(s.branchId) || s.branchId,
-      Machine_Index: s.machineIndex,
-      Shift_Index: s.slotIndex,
+      Center: branchNameMap.get(s.branchId) || branchCodeMap.get(s.branchId) || s.branchId,
+      Machine: `Machine ${s.machineIndex}`,
+      Shift: s.slotIndex === 1 ? 'Shift 1 (08:00 - 12:00)' : 'Shift 2 (12:30 - 16:30)',
       Slot_Type: s.slotType,
       Applied_Rate: s.appliedRate,
-      Patient_Status: 'Occupied',
+      Patient_Name: `Patient M${s.machineIndex}-S${s.slotIndex}`,
+      Booking_Status: 'Occupied',
     }));
 
-  // 2. RateCard_Consultation (Rate card master & doctor consultation payouts)
-  const rateCardRows = catalog.map((c) => {
-    const ov = overrides.find((o) => o.serviceId === c.id);
-    return {
-      Department: c.department,
-      Service_Name: c.name,
-      Sub_Category: c.subCategory || '',
-      Default_Rate: c.defaultRate,
-      Payout_Model: c.payoutModel,
-      Doctor_Rev_Share_Pct: c.defaultRevSharePct,
-      Doctor_Fixed_Monthly_Fee: c.defaultFixedMonthlyFee,
-      Branch_Code: ov ? branchCodeMap.get(ov.branchId) || '' : '',
-      Branch_Override_Rate: ov?.overrideRate ?? '',
-      Consultation_Fee: c.department === 'CONSULTATION' ? c.defaultRate : '',
-    };
+  // 5. Costs_per_lab (Categorized monthly from July 2026)
+  const targetCosts = departmentCosts.filter((dc) => dc.yearMonth >= '2026-07');
+  const activeCosts = targetCosts.length > 0 ? targetCosts : departmentCosts;
+
+  const monthBranchMap = new Map<string, typeof departmentCosts>();
+  activeCosts.forEach((dc) => {
+    const key = `${dc.yearMonth}__${dc.branchId}`;
+    const list = monthBranchMap.get(key) || [];
+    list.push(dc);
+    monthBranchMap.set(key, list);
   });
 
-  // 3. Costs_Per_Lab (Department & lab level monthly OPEX)
-  const costRows = departmentCosts.map((dc) => ({
-    Year_Month: dc.yearMonth,
-    Branch_Code: branchCodeMap.get(dc.branchId) || dc.branchId,
-    Lab_Department: dc.department,
-    Rent: dc.rent,
-    Electricity: dc.electricity,
-    Staffing: dc.staffing,
-    Consumables: dc.consumables,
-    Licensing: dc.licensing,
-    Other: dc.other,
-    Fixed_Opex_Total: dc.fixedOpeXTotal,
-  }));
+  const costsPerLabRows: any[] = [];
+  const categories = [
+    { key: 'consumables', label: 'Consumables' },
+    { key: 'staffing', label: 'Manpower' },
+    { key: 'rent', label: 'Rent' },
+    { key: 'electricity', label: 'Electricity' },
+    { key: 'other', label: 'Misc' },
+  ];
 
-  // 4. Daily_Dept_Revenue (Daily patient encounters and test revenues)
-  const dailyRows = entries.map((e) => {
-    const srv = catalog.find((c) => c.id === e.serviceId);
-    return {
-      Date: e.date,
-      Branch_Code: branchCodeMap.get(e.branchId) || e.branchId,
-      Department: e.department,
-      Service_Name: srv?.name || e.serviceId,
-      Patient_Count: e.patientCount,
-      Applied_Rate: e.rate,
-      Calculated_Revenue: e.revenue,
-      Doctor_Payout: e.doctorVariablePayout,
+  monthBranchMap.forEach((deptList, key) => {
+    const [ym, brId] = key.split('__');
+    const branchName = branchNameMap.get(brId) || brId;
+
+    const findCost = (deptId: string, catKey: string): number => {
+      const rec = deptList.find((d) => d.department === deptId);
+      if (!rec) return 0;
+      if (catKey === 'consumables') return rec.consumables;
+      if (catKey === 'staffing') return rec.staffing;
+      if (catKey === 'rent') return rec.rent;
+      if (catKey === 'electricity') return rec.electricity;
+      if (catKey === 'other') return rec.licensing + rec.other;
+      return 0;
     };
+
+    let tDia = 0, tBld = 0, tUsg = 0, tXry = 0, tPhy = 0, tCon = 0, tAll = 0;
+
+    categories.forEach((cat) => {
+      const dia = findCost('DIALYSIS', cat.key);
+      const bld = findCost('BLOOD_TEST', cat.key);
+      const usg = findCost('USG', cat.key);
+      const xry = findCost('XRAY', cat.key);
+      const phy = findCost('PHYSIO', cat.key);
+      const con = findCost('CONSULTATION', cat.key);
+      const sum = dia + bld + usg + xry + phy + con;
+      tDia += dia; tBld += bld; tUsg += usg; tXry += xry; tPhy += phy; tCon += con; tAll += sum;
+
+      costsPerLabRows.push({
+        Month: ym,
+        Branch: branchName,
+        Expense_Category: cat.label,
+        Dialysis: dia,
+        Blood_Tests: bld,
+        USG: usg,
+        X_Ray: xry,
+        Physiotherapy: phy,
+        Consultation: con,
+        Branch_Total: sum,
+      });
+    });
+
+    costsPerLabRows.push({
+      Month: ym,
+      Branch: branchName,
+      Expense_Category: 'Total',
+      Dialysis: tDia,
+      Blood_Tests: tBld,
+      USG: tUsg,
+      X_Ray: tXry,
+      Physiotherapy: tPhy,
+      Consultation: tCon,
+      Branch_Total: tAll,
+    });
   });
 
   return {
-    Dialysis_Slots: dialysisRows,
-    RateCard_Consultation: rateCardRows,
-    Costs_Per_Lab: costRows,
-    Daily_Dept_Revenue: dailyRows,
+    Dar_Al_Shifa: dusRows,
+    Saifee_Diagnostic_Centre: sdcRows,
+    OPD_Rooms: opdRows,
+    Dialysis_slots: dialysisRows,
+    Costs_per_lab: costsPerLabRows,
   };
 }
 
@@ -438,10 +527,11 @@ export async function pullFromGoogleSheets(): Promise<{ success: boolean; messag
       }
 
       const sheetsData: Record<string, any[]> = {
-        Dialysis_Slots: data.Dialysis_Slots || [],
-        RateCard_Consultation: data.RateCard_Consultation || [],
-        Costs_Per_Lab: data.Costs_Per_Lab || [],
-        Daily_Dept_Revenue: data.Daily_Dept_Revenue || [],
+        'Dar Al Shifa': data.Dar_Al_Shifa || data['Dar Al Shifa'] || [],
+        'Saifee Diagnostic Centre': data.Saifee_Diagnostic_Centre || data['Saifee Diagnostic Centre'] || [],
+        'OPD_Rooms': data.OPD_Rooms || data['OPD_Rooms'] || [],
+        'Dialysis_slots': data.Dialysis_slots || data['Dialysis_slots'] || [],
+        'Costs_per_lab': data.Costs_per_lab || data['Costs_per_lab'] || [],
       };
 
       const result = await importParsedSpreadsheetData(sheetsData, 'MERGE');
@@ -461,7 +551,7 @@ export async function pullFromGoogleSheets(): Promise<{ success: boolean; messag
 
       return {
         success: true,
-        message: `Successfully pulled and merged ${result.auditCounts.dialysisSlots} dialysis slots, ${result.auditCounts.serviceCatalog} rate items, and ${result.auditCounts.departmentCosts} lab costs from Google Sheets!`,
+        message: `Successfully pulled and merged ${result.auditCounts.patientInvoices} invoices, ${result.auditCounts.opdRoomSlots} OPD room slots, ${result.auditCounts.dialysisSlots} dialysis slots, and ${result.auditCounts.departmentCosts} lab costs from Google Sheets!`,
       };
     } catch (err: any) {
       return { success: false, message: `Failed to pull from Google Sheets: ${err.message}` };

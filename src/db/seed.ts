@@ -1,6 +1,7 @@
 import { db } from './database';
 import {
   Branch,
+  BranchId,
   ServiceCatalogItem,
   DialysisCapacityLog,
   BranchRateOverride,
@@ -9,6 +10,9 @@ import {
   MonthlyCostRecord,
   DepartmentCostRecord,
   DepartmentId,
+  PatientInvoiceRecord,
+  OpdRoomSlotBooking,
+  OpdRoomId,
 } from '../types/schema';
 import { eachDayOfInterval, parseISO, format, getDay } from 'date-fns';
 
@@ -365,6 +369,98 @@ export async function seedDatabase(forceReset = false): Promise<void> {
     departmentCosts.push(...splitMonthlyCostToDepartments(mc));
   });
 
+  // Generate sample patient invoices for both centers
+  const patientInvoices: PatientInvoiceRecord[] = [];
+  const patientNames = [
+    { name: 'Fatima Khan', gender: '48 / F', contact: '+91 98201 12345' },
+    { name: 'Mohammed Siddiqui', gender: '54 / M', contact: '+91 98202 23456' },
+    { name: 'Ayesha Shaikh', gender: '36 / F', contact: '+91 98203 34567' },
+    { name: 'Zoya Sayed', gender: '29 / F', contact: '+91 98204 45678' },
+    { name: 'Imran Merchant', gender: '62 / M', contact: '+91 98205 56789' },
+    { name: 'Yusuf Patel', gender: '45 / M', contact: '+91 98206 67890' },
+    { name: 'Zainab Memon', gender: '51 / F', contact: '+91 98207 78901' },
+    { name: 'Bilal Qureshi', gender: '39 / M', contact: '+91 98208 89012' },
+    { name: 'Mariam Ansari', gender: '67 / F', contact: '+91 98209 90123' },
+    { name: 'Tariq Chougule', gender: '41 / M', contact: '+91 98210 01234' },
+    { name: 'Shabana Kazi', gender: '33 / F', contact: '+91 98211 12345' },
+    { name: 'Arif Dalvi', gender: '58 / M', contact: '+91 98212 23456' },
+  ];
+
+  const times = ['08:45 AM', '09:15 AM', '10:00 AM', '10:30 AM', '11:15 AM', '12:00 PM', '02:30 PM', '03:45 PM', '04:15 PM', '05:00 PM', '06:15 PM', '07:30 PM'];
+  const amounts = [300, 500, 600, 900, 1200, 1500, 1800, 2200, 2500];
+
+  MASTER_BRANCHES.forEach((b) => {
+    for (let i = 0; i < 24; i++) {
+      const p = patientNames[i % patientNames.length];
+      const invNum = `INV-${b.code}-2026-${String(1001 + i).padStart(5, '0')}`;
+      const umrNum = `UMR-${b.code}-${String(5001 + i).padStart(5, '0')}`;
+      const timeOfBill = `2026-07-${String((i % 28) + 1).padStart(2, '0')} ${times[i % times.length]}`;
+      const netAmt = amounts[i % amounts.length];
+
+      patientInvoices.push({
+        id: `${b.id}_${invNum}`,
+        branchId: b.id,
+        srNo: i + 1,
+        invoiceNumber: invNum,
+        timeOfBill,
+        netAmt,
+        umr: umrNum,
+        patientName: p.name,
+        ageGender: p.gender,
+        personalContact: p.contact,
+      });
+    }
+  });
+
+  // Generate OPD room slot booking schedule (2500/2 hrs, 6 slots from 8am to 8pm, 7 days/week)
+  const opdRoomSlots: OpdRoomSlotBooking[] = [];
+  const daysOfWeek = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const opdTimeSlots = [
+    '08:00 AM - 10:00 AM',
+    '10:00 AM - 12:00 PM',
+    '12:00 PM - 02:00 PM',
+    '02:00 PM - 04:00 PM',
+    '04:00 PM - 06:00 PM',
+    '06:00 PM - 08:00 PM',
+  ];
+
+  const opdRooms: Array<{ id: OpdRoomId; name: string; branchId: BranchId }> = [
+    { id: 'SDC_OPD1', name: 'Saifee Diagnostic Centre - OPD 1', branchId: 'br_saifee_diag' },
+    { id: 'DUS_OPD1', name: 'Dar Al Shifa - OPD 1', branchId: 'br_dar_ul_shifa' },
+    { id: 'DUS_OPD2', name: 'Dar Al Shifa - OPD 2', branchId: 'br_dar_ul_shifa' },
+  ];
+
+  const doctorsPool = [
+    { name: 'Dr. Z. Qureshi', specialty: 'Nephrology' },
+    { name: 'Dr. M. Ansari', specialty: 'Cardiology' },
+    { name: 'Dr. S. Merchant', specialty: 'General Physician' },
+    { name: 'Dr. A. Mehta', specialty: 'Endocrinology' },
+    { name: 'Dr. F. Pathan', specialty: 'Orthopedics' },
+    { name: 'Dr. R. Kazi', specialty: 'Urology' },
+  ];
+
+  opdRooms.forEach((room) => {
+    daysOfWeek.forEach((day, dIdx) => {
+      opdTimeSlots.forEach((slotTime, sIdx) => {
+        const isBooked = (dIdx + sIdx) % 3 !== 0;
+        const doc = isBooked ? doctorsPool[(dIdx + sIdx) % doctorsPool.length] : undefined;
+        opdRoomSlots.push({
+          id: `${room.branchId}_${room.id}_${day}_S${sIdx + 1}`,
+          branchId: room.branchId,
+          roomId: room.id,
+          roomName: room.name,
+          dayOfWeek: day,
+          slotIndex: sIdx + 1,
+          timeSlot: slotTime,
+          rate: 2500,
+          doctorName: doc?.name,
+          specialty: doc?.specialty,
+          isBooked,
+        });
+      });
+    });
+  });
+
   await db.transaction(
     'rw',
     [
@@ -376,6 +472,8 @@ export async function seedDatabase(forceReset = false): Promise<void> {
       db.dailyEntries,
       db.monthlyCosts,
       db.departmentCosts,
+      db.patientInvoices,
+      db.opdRoomSlots,
       db.meta,
     ],
     async () => {
@@ -388,6 +486,8 @@ export async function seedDatabase(forceReset = false): Promise<void> {
         db.dailyEntries.clear(),
         db.monthlyCosts.clear(),
         db.departmentCosts.clear(),
+        db.patientInvoices.clear(),
+        db.opdRoomSlots.clear(),
       ]);
       await db.branches.bulkAdd(MASTER_BRANCHES);
       await db.serviceCatalog.bulkAdd(MASTER_CATALOG);
@@ -397,6 +497,8 @@ export async function seedDatabase(forceReset = false): Promise<void> {
       await db.dailyEntries.bulkAdd(dailyEntries);
       await db.monthlyCosts.bulkAdd(monthlyCosts);
       await db.departmentCosts.bulkAdd(departmentCosts);
+      await db.patientInvoices.bulkAdd(patientInvoices);
+      await db.opdRoomSlots.bulkAdd(opdRoomSlots);
       await db.meta.put({ key: 'isSampleDataLoaded', value: true });
       await db.meta.put({ key: 'isEdited', value: false });
     }

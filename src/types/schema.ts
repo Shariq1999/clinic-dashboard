@@ -141,6 +141,35 @@ export interface DepartmentCostRecord {
   fixedOpeXTotal: number;     // Sum of the 6 buckets for this department
 }
 
+export interface PatientInvoiceRecord {
+  id: string;                 // `${branchId}_${invoiceNumber}`
+  branchId: BranchId;
+  srNo: number;
+  invoiceNumber: string;
+  timeOfBill: string;         // "YYYY-MM-DD HH:mm"
+  netAmt: number;
+  umr: string;
+  patientName: string;
+  ageGender: string;
+  personalContact: string;
+}
+
+export type OpdRoomId = 'SDC_OPD1' | 'DUS_OPD1' | 'DUS_OPD2';
+
+export interface OpdRoomSlotBooking {
+  id: string;                 // `${branchId}_${roomId}_${dayOfWeek}_S${slotIndex}`
+  branchId: BranchId;
+  roomId: OpdRoomId;
+  roomName: string;
+  dayOfWeek: string;          // "Monday" .. "Sunday"
+  slotIndex: number;          // 1..6
+  timeSlot: string;           // "08:00 - 10:00", etc.
+  rate: number;               // Flat 2500 INR / 2 hrs
+  doctorName?: string;
+  specialty?: string;
+  isBooked: boolean;
+}
+
 export interface BackupPayload {
   version: string;
   exportedAt: string;
@@ -152,4 +181,6 @@ export interface BackupPayload {
   dailyEntries: DailyDepartmentEntry[];
   monthlyCosts: MonthlyCostRecord[];
   departmentCosts?: DepartmentCostRecord[];
+  patientInvoices?: PatientInvoiceRecord[];
+  opdRoomSlots?: OpdRoomSlotBooking[];
 }

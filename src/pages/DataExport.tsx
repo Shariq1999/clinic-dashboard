@@ -6,8 +6,10 @@ import {
   downloadExcelImportTemplate,
   exportDailyEntriesCsv,
   exportDialysisSlotsCsv,
-  exportRateCardConsultationCsv,
   exportCostsPerLabCsv,
+  exportDarAlShifaInvoicesCsv,
+  exportSaifeeInvoicesCsv,
+  exportOpdRoomsCsv,
 } from '../engine/exportEngine';
 import { importSpreadsheetFile, ImportResultSummary } from '../engine/importEngine';
 import {
@@ -34,12 +36,13 @@ import {
   AlertTriangle,
   Cloud,
   RefreshCw,
-  ExternalLink,
   Copy,
   Check,
   Code,
   X,
   Sliders,
+  Calendar,
+  Building,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 
@@ -66,7 +69,8 @@ export const DataExport: React.FC = () => {
   // Table counts for audit overview
   const branchCount = useLiveQuery(() => db.branches.count());
   const catalogCount = useLiveQuery(() => db.serviceCatalog.count());
-  const overrideCount = useLiveQuery(() => db.rateOverrides.count());
+  const invoiceCount = useLiveQuery(() => db.patientInvoices.count());
+  const opdSlotCount = useLiveQuery(() => db.opdRoomSlots.count());
   const deptCostCount = useLiveQuery(() => db.departmentCosts.count());
   const costCount = useLiveQuery(() => db.monthlyCosts.count());
   const dailyCount = useLiveQuery(() => db.dailyEntries.count());
@@ -82,7 +86,7 @@ export const DataExport: React.FC = () => {
       await downloadExcelImportTemplate();
       setFeedback({
         type: 'success',
-        message: 'Downloaded standardized 3-sheet Excel template (Clinic_Data_Import_Template.xlsx)!',
+        message: 'Downloaded standardized 5-tab Excel template (Clinic_Data_Import_Template.xlsx)!',
       });
     } catch (err: any) {
       setFeedback({ type: 'error', message: err?.message || 'Failed to download template.' });
@@ -97,10 +101,46 @@ export const DataExport: React.FC = () => {
       await exportFullExcelWorkbook();
       setFeedback({
         type: 'success',
-        message: 'Full master workbook (.xlsx) exported successfully with Dialysis Slots, Rate Card & Consultation, and Costs per Lab!',
+        message: 'Full 5-tab master workbook (.xlsx) exported successfully with Dar Al Shifa, Saifee, OPD Rooms, Dialysis Slots, and Costs per Lab!',
       });
     } catch (err: any) {
       setFeedback({ type: 'error', message: err?.message || 'Failed to generate Excel file.' });
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const handleExportDusInvoices = async () => {
+    setLoadingAction('csv-dus-invoices');
+    try {
+      await exportDarAlShifaInvoicesCsv();
+      setFeedback({ type: 'success', message: 'Dar Al Shifa patient invoices CSV exported successfully!' });
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err?.message || 'Failed to export Dar Al Shifa invoices.' });
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const handleExportSdcInvoices = async () => {
+    setLoadingAction('csv-sdc-invoices');
+    try {
+      await exportSaifeeInvoicesCsv();
+      setFeedback({ type: 'success', message: 'Saifee Diagnostic Centre patient invoices CSV exported successfully!' });
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err?.message || 'Failed to export Saifee invoices.' });
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const handleExportOpdRooms = async () => {
+    setLoadingAction('csv-opd-rooms');
+    try {
+      await exportOpdRoomsCsv();
+      setFeedback({ type: 'success', message: 'OPD room booking schedule CSV (2500/2 hrs) exported successfully!' });
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err?.message || 'Failed to export OPD rooms CSV.' });
     } finally {
       setLoadingAction(null);
     }
@@ -110,21 +150,9 @@ export const DataExport: React.FC = () => {
     setLoadingAction('csv-dialysis');
     try {
       await exportDialysisSlotsCsv();
-      setFeedback({ type: 'success', message: 'Occupied dialysis slots CSV exported successfully!' });
+      setFeedback({ type: 'success', message: 'Dialysis slots date-wise tables CSV exported successfully!' });
     } catch (err: any) {
       setFeedback({ type: 'error', message: err?.message || 'Failed to export Dialysis CSV.' });
-    } finally {
-      setLoadingAction(null);
-    }
-  };
-
-  const handleExportRateCardCsv = async () => {
-    setLoadingAction('csv-ratecard');
-    try {
-      await exportRateCardConsultationCsv();
-      setFeedback({ type: 'success', message: 'Rate card & consultation revenue models CSV exported successfully!' });
-    } catch (err: any) {
-      setFeedback({ type: 'error', message: err?.message || 'Failed to export Rate Card CSV.' });
     } finally {
       setLoadingAction(null);
     }
@@ -134,7 +162,7 @@ export const DataExport: React.FC = () => {
     setLoadingAction('csv-costs');
     try {
       await exportCostsPerLabCsv();
-      setFeedback({ type: 'success', message: 'Department & lab OPEX costs CSV exported successfully!' });
+      setFeedback({ type: 'success', message: 'Costs per lab categorized OPEX CSV (July 2026 onwards) exported successfully!' });
     } catch (err: any) {
       setFeedback({ type: 'error', message: err?.message || 'Failed to export Costs per Lab CSV.' });
     } finally {
@@ -235,13 +263,13 @@ export const DataExport: React.FC = () => {
   };
 
   const handlePushToGoogleSheets = async () => {
-    setSheetsSyncStatus({ type: 'syncing', text: 'Pushing Dialysis Slots, Rate Card, and Lab Costs to Google Sheets...' });
+    setSheetsSyncStatus({ type: 'syncing', text: 'Pushing 5 clinical tabs to Google Sheets...' });
     const res = await pushToGoogleSheets();
     if (res.success) {
       const refreshed = getCloudSyncConfig();
       setCloudConfig(refreshed);
       setSheetsSyncStatus({ type: 'success', text: res.message });
-      setFeedback({ type: 'success', message: 'Successfully synced all records to Google Sheets!' });
+      setFeedback({ type: 'success', message: 'Successfully synced all 5 tabs to Google Sheets!' });
     } else {
       setSheetsSyncStatus({ type: 'error', text: res.message });
       setFeedback({ type: 'error', message: res.message });
@@ -250,11 +278,11 @@ export const DataExport: React.FC = () => {
 
   const handlePullFromGoogleSheets = async () => {
     const proceed = window.confirm(
-      'Notice: Pulling from Google Sheets will merge remote sheets (Dialysis Slots, Rate Card & Consultation, Costs per Lab) into your local browser database. Proceed?'
+      'Notice: Pulling from Google Sheets will merge remote sheets (Dar Al Shifa, Saifee, OPD Rooms, Dialysis Slots, Costs per Lab) into your local browser database. Proceed?'
     );
     if (!proceed) return;
 
-    setSheetsSyncStatus({ type: 'syncing', text: 'Pulling latest spreadsheet tabs from Google Sheets...' });
+    setSheetsSyncStatus({ type: 'syncing', text: 'Pulling 5 latest tabs from Google Sheets...' });
     const res = await pullFromGoogleSheets();
     if (res.success) {
       const refreshed = getCloudSyncConfig();
@@ -342,7 +370,7 @@ export const DataExport: React.FC = () => {
                 </span>
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Sync Dialysis Slots, Rate Card & Consultation Revenue, and Costs per Lab directly with your Google Sheet.
+                Sync all 5 operational sheets (Dar Al Shifa, Saifee Diagnostic Centre, OPD Rooms, Dialysis Slots, Costs per Lab) directly with your Google Sheet.
               </p>
             </div>
           </div>
@@ -462,11 +490,11 @@ export const DataExport: React.FC = () => {
               <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
                 Bi-Directional Spreadsheet Import (.xlsx &amp; .csv)
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  Bulk Operations
+                  5 Clinical Tabs
                 </span>
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Download the 3-sheet template, update records, and import directly into the browser database. Accepts <strong>.xlsx</strong> and <strong>.csv</strong> files.
+                Download the standardized 5-tab template, update records, and import directly into the browser database. Accepts <strong>.xlsx</strong> and <strong>.csv</strong> files.
               </p>
             </div>
           </div>
@@ -479,26 +507,53 @@ export const DataExport: React.FC = () => {
               className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold rounded-lg border border-emerald-200 transition-colors cursor-pointer"
             >
               <Download className="w-4 h-4 text-emerald-600" />
-              <span>{loadingAction === 'template' ? 'Generating...' : 'Download 3-Sheet Template (.xlsx)'}</span>
+              <span>{loadingAction === 'template' ? 'Generating...' : 'Download 5-Tab Template (.xlsx)'}</span>
             </button>
           </div>
         </div>
 
-        {/* 3-Tab Structure Explanation Banner */}
-        <div className="mt-4 p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs">
-          <span className="font-bold text-slate-800 block mb-1">Standardized 3-Sheet Workbook Structure:</span>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-slate-600">
-            <div className="p-2 bg-white rounded border border-slate-200">
-              <strong className="text-teal-700 block text-[11px] uppercase">Sheet 1: Dialysis_Slots</strong>
-              <span className="text-[11px]">Machine &amp; shift bookings, slot types (STANDARD/SINGLE_USE), and applied INR rates.</span>
+        {/* 5-Tab Structure Explanation Banner */}
+        <div className="mt-4 p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-2">
+          <span className="font-bold text-slate-800 block">Standardized 5-Tab Workbook Structure:</span>
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-2.5 text-slate-600">
+            <div className="p-2.5 bg-white rounded-lg border border-slate-200 flex flex-col justify-between">
+              <div>
+                <strong className="text-teal-700 block text-[11px] uppercase">1. Dar Al Shifa</strong>
+                <span className="text-[10px] text-slate-400 block mt-0.5">Billing &amp; Invoices</span>
+                <p className="text-[11px] text-slate-600 mt-1">Sr. no., Invoice number, time of Bill, Net Amt, UMR, Patient Name, Age/Gender, Personal contact.</p>
+              </div>
             </div>
-            <div className="p-2 bg-white rounded border border-slate-200">
-              <strong className="text-teal-700 block text-[11px] uppercase">Sheet 2: RateCard_Consultation</strong>
-              <span className="text-[11px]">Service price catalog, doctor compensation models (share % / retainer), and consultation fees.</span>
+
+            <div className="p-2.5 bg-white rounded-lg border border-slate-200 flex flex-col justify-between">
+              <div>
+                <strong className="text-teal-700 block text-[11px] uppercase">2. Saifee Diagnostic Centre</strong>
+                <span className="text-[10px] text-slate-400 block mt-0.5">Billing &amp; Invoices</span>
+                <p className="text-[11px] text-slate-600 mt-1">Sr. no., Invoice number, time of Bill, Net Amt, UMR, Patient Name, Age/Gender, Personal contact.</p>
+              </div>
             </div>
-            <div className="p-2 bg-white rounded border border-slate-200">
-              <strong className="text-teal-700 block text-[11px] uppercase">Sheet 3: Costs_Per_Lab</strong>
-              <span className="text-[11px]">Department and lab OPEX breakdown: Rent, Electricity, Staffing, Consumables, and Licensing.</span>
+
+            <div className="p-2.5 bg-white rounded-lg border border-slate-200 flex flex-col justify-between">
+              <div>
+                <strong className="text-teal-700 block text-[11px] uppercase">3. OPD_Rooms</strong>
+                <span className="text-[10px] text-slate-400 block mt-0.5">₹2,500 / 2 hrs</span>
+                <p className="text-[11px] text-slate-600 mt-1">Saifee OPD 1, Dar Al Shifa OPD 1 &amp; OPD 2. 6 two-hour slots (8am-8pm), 7 days a week.</p>
+              </div>
+            </div>
+
+            <div className="p-2.5 bg-white rounded-lg border border-slate-200 flex flex-col justify-between">
+              <div>
+                <strong className="text-teal-700 block text-[11px] uppercase">4. Dialysis_slots</strong>
+                <span className="text-[10px] text-slate-400 block mt-0.5">Station Matrix</span>
+                <p className="text-[11px] text-slate-600 mt-1">Date-wise center-wise tables for machine fleet, shifts, slot types, and applied rates.</p>
+              </div>
+            </div>
+
+            <div className="p-2.5 bg-white rounded-lg border border-slate-200 flex flex-col justify-between">
+              <div>
+                <strong className="text-teal-700 block text-[11px] uppercase">5. Costs_per_lab</strong>
+                <span className="text-[10px] text-slate-400 block mt-0.5">From July 2026</span>
+                <p className="text-[11px] text-slate-600 mt-1">Categorized OPEX (Consumables, Manpower, Rent, Electricity, Misc) tables for each branch.</p>
+              </div>
             </div>
           </div>
         </div>
@@ -563,7 +618,7 @@ export const DataExport: React.FC = () => {
                 Step 2: Upload Spreadsheet (.xlsx or .csv)
               </span>
               <p className="text-xs text-slate-500 mb-3">
-                Upload 3-sheet <strong>.xlsx</strong> template or individual dataset <strong>.csv</strong> file.
+                Upload 5-tab <strong>.xlsx</strong> template or individual dataset <strong>.csv</strong> file.
                 <span className="text-rose-600 font-semibold block mt-0.5">Note: JSON files are strictly not accepted.</span>
               </p>
             </div>
@@ -603,14 +658,18 @@ export const DataExport: React.FC = () => {
               </span>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
+              <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
+                <span className="text-[10px] uppercase font-semibold text-slate-400">Invoices</span>
+                <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.patientInvoices}</p>
+              </div>
+              <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
+                <span className="text-[10px] uppercase font-semibold text-slate-400">OPD Slots</span>
+                <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.opdRoomSlots}</p>
+              </div>
               <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
                 <span className="text-[10px] uppercase font-semibold text-slate-400">Dialysis Slots</span>
                 <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.dialysisSlots}</p>
-              </div>
-              <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
-                <span className="text-[10px] uppercase font-semibold text-slate-400">Rate Items</span>
-                <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.serviceCatalog}</p>
               </div>
               <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
                 <span className="text-[10px] uppercase font-semibold text-slate-400">Lab Costs</span>
@@ -619,14 +678,6 @@ export const DataExport: React.FC = () => {
               <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
                 <span className="text-[10px] uppercase font-semibold text-slate-400">Monthly OPEX</span>
                 <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.monthlyCosts}</p>
-              </div>
-              <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
-                <span className="text-[10px] uppercase font-semibold text-slate-400">Daily Revenue</span>
-                <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.dailyEntries}</p>
-              </div>
-              <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
-                <span className="text-[10px] uppercase font-semibold text-slate-400">Overrides</span>
-                <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.rateOverrides}</p>
               </div>
               <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
                 <span className="text-[10px] uppercase font-semibold text-slate-400">Branches</span>
@@ -676,12 +727,16 @@ export const DataExport: React.FC = () => {
             <p className="text-lg font-bold text-slate-900 mt-0.5">{branchCount ?? '—'}</p>
           </div>
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
-            <span className="text-[10px] uppercase font-semibold text-slate-500">Service Items</span>
-            <p className="text-lg font-bold text-slate-900 mt-0.5">{catalogCount ?? '—'}</p>
+            <span className="text-[10px] uppercase font-semibold text-slate-500">Invoices</span>
+            <p className="text-lg font-bold text-slate-900 mt-0.5">{invoiceCount ?? '—'}</p>
           </div>
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
-            <span className="text-[10px] uppercase font-semibold text-slate-500">Branch Overrides</span>
-            <p className="text-lg font-bold text-slate-900 mt-0.5">{overrideCount ?? '—'}</p>
+            <span className="text-[10px] uppercase font-semibold text-slate-500">OPD Slots</span>
+            <p className="text-lg font-bold text-slate-900 mt-0.5">{opdSlotCount ?? '—'}</p>
+          </div>
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
+            <span className="text-[10px] uppercase font-semibold text-slate-500">Dialysis Slots</span>
+            <p className="text-lg font-bold text-slate-900 mt-0.5">{slotCount ?? '—'}</p>
           </div>
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
             <span className="text-[10px] uppercase font-semibold text-slate-500">Lab Costs</span>
@@ -692,16 +747,12 @@ export const DataExport: React.FC = () => {
             <p className="text-lg font-bold text-slate-900 mt-0.5">{costCount ?? '—'}</p>
           </div>
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
+            <span className="text-[10px] uppercase font-semibold text-slate-500">Service Items</span>
+            <p className="text-lg font-bold text-slate-900 mt-0.5">{catalogCount ?? '—'}</p>
+          </div>
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
             <span className="text-[10px] uppercase font-semibold text-slate-500">Daily Dept Logs</span>
             <p className="text-lg font-bold text-slate-900 mt-0.5">{dailyCount ?? '—'}</p>
-          </div>
-          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
-            <span className="text-[10px] uppercase font-semibold text-slate-500">Dialysis Slots</span>
-            <p className="text-lg font-bold text-slate-900 mt-0.5">{slotCount ?? '—'}</p>
-          </div>
-          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
-            <span className="text-[10px] uppercase font-semibold text-slate-500">Capacity Logs</span>
-            <p className="text-lg font-bold text-slate-900 mt-0.5">{capacityCount ?? '—'}</p>
           </div>
         </div>
       </div>
@@ -713,16 +764,16 @@ export const DataExport: React.FC = () => {
         <h3 className="font-bold text-slate-900 text-sm mb-3">
           Export &amp; Offline Backup Options (.xlsx and .csv only)
         </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5">
           {/* 1. Master Excel Backup */}
           <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
             <div>
-              <div className="w-9 h-9 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center mb-2.5">
-                <FileSpreadsheet className="w-5 h-5" />
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center mb-2">
+                <FileSpreadsheet className="w-4 h-4" />
               </div>
-              <h4 className="font-bold text-slate-900 text-xs">Master Backup (.xlsx)</h4>
+              <h4 className="font-bold text-slate-900 text-xs">Master 5-Tab (.xlsx)</h4>
               <p className="text-[11px] text-slate-500 mt-1 mb-3">
-                Full 3-sheet backup workbook including Dialysis Slots, Rate Card &amp; Consultation, and Costs per Lab.
+                Full 5-sheet workbook: Dar Al Shifa, Saifee, OPD Rooms, Dialysis Slots, Costs per Lab.
               </p>
             </div>
             <button
@@ -736,59 +787,103 @@ export const DataExport: React.FC = () => {
             </button>
           </div>
 
-          {/* 2. Dialysis Slots CSV */}
+          {/* 2. Dar Al Shifa Invoices CSV */}
           <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
             <div>
-              <div className="w-9 h-9 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center mb-2.5">
-                <FileText className="w-5 h-5" />
+              <div className="w-8 h-8 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center mb-2">
+                <FileText className="w-4 h-4" />
+              </div>
+              <h4 className="font-bold text-slate-900 text-xs">Dar Al Shifa Bills (.csv)</h4>
+              <p className="text-[11px] text-slate-500 mt-1 mb-3">
+                Invoice numbers, timestamps, net amounts, UMR numbers, and patient contact records.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleExportDusInvoices}
+              disabled={loadingAction === 'csv-dus-invoices'}
+              className="w-full flex items-center justify-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{loadingAction === 'csv-dus-invoices' ? 'Exporting...' : 'Export CSV'}</span>
+            </button>
+          </div>
+
+          {/* 3. Saifee Invoices CSV */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
+            <div>
+              <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center mb-2">
+                <FileText className="w-4 h-4" />
+              </div>
+              <h4 className="font-bold text-slate-900 text-xs">Saifee Bills (.csv)</h4>
+              <p className="text-[11px] text-slate-500 mt-1 mb-3">
+                Patient invoices, timestamps, net amounts, UMR, and demographic records for SDC center.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleExportSdcInvoices}
+              disabled={loadingAction === 'csv-sdc-invoices'}
+              className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{loadingAction === 'csv-sdc-invoices' ? 'Exporting...' : 'Export CSV'}</span>
+            </button>
+          </div>
+
+          {/* 4. OPD Rooms CSV */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
+            <div>
+              <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-700 flex items-center justify-center mb-2">
+                <Calendar className="w-4 h-4" />
+              </div>
+              <h4 className="font-bold text-slate-900 text-xs">OPD Rooms (.csv)</h4>
+              <p className="text-[11px] text-slate-500 mt-1 mb-3">
+                2-hour booking slots (8am-8pm, 7 days/week) at ₹2,500/2 hrs for SDC OPD 1, DUS OPD 1 &amp; OPD 2.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleExportOpdRooms}
+              disabled={loadingAction === 'csv-opd-rooms'}
+              className="w-full flex items-center justify-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{loadingAction === 'csv-opd-rooms' ? 'Exporting...' : 'Export CSV'}</span>
+            </button>
+          </div>
+
+          {/* 5. Dialysis Slots CSV */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
+            <div>
+              <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-700 flex items-center justify-center mb-2">
+                <FileText className="w-4 h-4" />
               </div>
               <h4 className="font-bold text-slate-900 text-xs">Dialysis Slots (.csv)</h4>
               <p className="text-[11px] text-slate-500 mt-1 mb-3">
-                Occupied dialysis station shift bookings, slot types, and applied rates as clean CSV records.
+                Date-wise center-wise shift bookings, slot types (Standard/Single-Use), and rates.
               </p>
             </div>
             <button
               type="button"
               onClick={handleExportDialysisCsv}
               disabled={loadingAction === 'csv-dialysis'}
-              className="w-full flex items-center justify-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+              className="w-full flex items-center justify-center gap-1.5 bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
               <span>{loadingAction === 'csv-dialysis' ? 'Exporting...' : 'Export CSV'}</span>
             </button>
           </div>
 
-          {/* 3. Rate Card & Consultation CSV */}
+          {/* 6. Costs Per Lab CSV */}
           <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
             <div>
-              <div className="w-9 h-9 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center mb-2.5">
-                <FileText className="w-5 h-5" />
-              </div>
-              <h4 className="font-bold text-slate-900 text-xs">Rate Card &amp; Fees (.csv)</h4>
-              <p className="text-[11px] text-slate-500 mt-1 mb-3">
-                Complete service catalog, doctor consultation fees, and doctor remuneration percentage share models.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleExportRateCardCsv}
-              disabled={loadingAction === 'csv-ratecard'}
-              className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>{loadingAction === 'csv-ratecard' ? 'Exporting...' : 'Export CSV'}</span>
-            </button>
-          </div>
-
-          {/* 4. Costs Per Lab CSV */}
-          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
-            <div>
-              <div className="w-9 h-9 rounded-lg bg-purple-50 text-purple-700 flex items-center justify-center mb-2.5">
-                <FileText className="w-5 h-5" />
+              <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-700 flex items-center justify-center mb-2">
+                <FileText className="w-4 h-4" />
               </div>
               <h4 className="font-bold text-slate-900 text-xs">Costs Per Lab (.csv)</h4>
               <p className="text-[11px] text-slate-500 mt-1 mb-3">
-                Operational cost buckets per department (Blood Test, USG, X-Ray, Physio, Dialysis).
+                Monthly OPEX tables from July 2026 (Consumables, Manpower, Rent, Electricity, Misc).
               </p>
             </div>
             <button
@@ -799,28 +894,6 @@ export const DataExport: React.FC = () => {
             >
               <Download className="w-3.5 h-3.5" />
               <span>{loadingAction === 'csv-costs' ? 'Exporting...' : 'Export CSV'}</span>
-            </button>
-          </div>
-
-          {/* 5. Daily Revenue CSV */}
-          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
-            <div>
-              <div className="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center mb-2.5">
-                <FileText className="w-5 h-5" />
-              </div>
-              <h4 className="font-bold text-slate-900 text-xs">Daily Revenue (.csv)</h4>
-              <p className="text-[11px] text-slate-500 mt-1 mb-3">
-                Granular daily patient encounters, test counts, applied fees, and calculated gross revenues.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={handleExportDailyCsv}
-              disabled={loadingAction === 'csv-daily'}
-              className="w-full flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>{loadingAction === 'csv-daily' ? 'Exporting...' : 'Export CSV'}</span>
             </button>
           </div>
         </div>
@@ -881,7 +954,7 @@ export const DataExport: React.FC = () => {
                 <li>In Google Sheets, click <strong>Extensions &gt; Apps Script</strong>.</li>
                 <li>Delete any code in the editor and paste the connector script below.</li>
                 <li>Click <strong>Deploy &gt; New deployment</strong>, select type <strong>Web app</strong>, choose <strong>Execute as: Me</strong>, and set <strong>Who has access: Anyone</strong>.</li>
-                <li>Copy the resulting Web App URL and paste it into the Sync URL box.</li>
+                <li>Copy the resulting Web App URL and paste it into the Sync URL box. Syncs all 5 tabs: <code className="text-teal-700 font-bold">Dar_Al_Shifa</code>, <code className="text-teal-700 font-bold">Saifee_Diagnostic_Centre</code>, <code className="text-teal-700 font-bold">OPD_Rooms</code>, <code className="text-teal-700 font-bold">Dialysis_slots</code>, <code className="text-teal-700 font-bold">Costs_per_lab</code>.</li>
               </ol>
 
               <div>

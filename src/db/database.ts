@@ -8,6 +8,8 @@ import {
   DailyDepartmentEntry,
   MonthlyCostRecord,
   DepartmentCostRecord,
+  PatientInvoiceRecord,
+  OpdRoomSlotBooking,
   BackupPayload,
 } from '../types/schema';
 
@@ -20,6 +22,8 @@ export class ClinicDatabase extends Dexie {
   dailyEntries!: Table<DailyDepartmentEntry, string>;
   monthlyCosts!: Table<MonthlyCostRecord, string>;
   departmentCosts!: Table<DepartmentCostRecord, string>;
+  patientInvoices!: Table<PatientInvoiceRecord, string>;
+  opdRoomSlots!: Table<OpdRoomSlotBooking, string>;
   meta!: Table<{ key: string; value: any }, string>;
 
   constructor() {
@@ -38,11 +42,16 @@ export class ClinicDatabase extends Dexie {
     this.version(2).stores({
       departmentCosts: 'id, branchId, yearMonth, department, [branchId+yearMonth], [branchId+yearMonth+department]',
     });
+
+    this.version(3).stores({
+      patientInvoices: 'id, branchId, srNo, invoiceNumber, umr',
+      opdRoomSlots: 'id, branchId, roomId, dayOfWeek, [branchId+roomId+dayOfWeek]',
+    });
   }
 
   async exportToJsonBackup(): Promise<string> {
     const payload: BackupPayload = {
-      version: '2.0.0',
+      version: '3.0.0',
       exportedAt: new Date().toISOString(),
       branches: await this.branches.toArray(),
       capacityLogs: await this.capacityLogs.toArray(),
@@ -52,6 +61,8 @@ export class ClinicDatabase extends Dexie {
       dailyEntries: await this.dailyEntries.toArray(),
       monthlyCosts: await this.monthlyCosts.toArray(),
       departmentCosts: await this.departmentCosts.toArray(),
+      patientInvoices: await this.patientInvoices.toArray(),
+      opdRoomSlots: await this.opdRoomSlots.toArray(),
     };
     return JSON.stringify(payload, null, 2);
   }
@@ -72,6 +83,8 @@ export class ClinicDatabase extends Dexie {
         this.dailyEntries,
         this.monthlyCosts,
         this.departmentCosts,
+        this.patientInvoices,
+        this.opdRoomSlots,
         this.meta,
       ],
       async () => {
@@ -84,6 +97,8 @@ export class ClinicDatabase extends Dexie {
           this.dailyEntries.clear(),
           this.monthlyCosts.clear(),
           this.departmentCosts.clear(),
+          this.patientInvoices.clear(),
+          this.opdRoomSlots.clear(),
         ]);
         if (data.branches?.length) await this.branches.bulkAdd(data.branches);
         if (data.capacityLogs?.length) await this.capacityLogs.bulkAdd(data.capacityLogs);
@@ -93,6 +108,8 @@ export class ClinicDatabase extends Dexie {
         if (data.dailyEntries?.length) await this.dailyEntries.bulkAdd(data.dailyEntries);
         if (data.monthlyCosts?.length) await this.monthlyCosts.bulkAdd(data.monthlyCosts);
         if (data.departmentCosts?.length) await this.departmentCosts.bulkAdd(data.departmentCosts);
+        if (data.patientInvoices?.length) await this.patientInvoices.bulkAdd(data.patientInvoices);
+        if (data.opdRoomSlots?.length) await this.opdRoomSlots.bulkAdd(data.opdRoomSlots);
         await this.meta.put({ key: 'isSampleDataLoaded', value: true });
         await this.meta.put({ key: 'isEdited', value: true });
       }
