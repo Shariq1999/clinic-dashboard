@@ -253,7 +253,7 @@ export const DailyEntry: React.FC = () => {
 
           <input
             type="file"
-            accept=".xlsx,.xls"
+            accept=".xlsx,.xls,.csv,text/csv"
             ref={excelFileRef}
             onChange={async (e) => {
               const file = e.target.files?.[0];

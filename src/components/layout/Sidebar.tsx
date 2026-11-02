@@ -58,7 +58,7 @@ const NAV_ITEMS: NavItem[] = [
   {
     id: 'export',
     label: 'Data Portability',
-    sublabel: 'Excel, CSV, JSON state',
+    sublabel: 'Excel, CSV & Google Sheets',
     icon: Download,
   },
 ];

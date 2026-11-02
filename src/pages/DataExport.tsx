@@ -5,9 +5,20 @@ import {
   exportFullExcelWorkbook,
   downloadExcelImportTemplate,
   exportDailyEntriesCsv,
-  triggerJsonBackupDownload,
+  exportDialysisSlotsCsv,
+  exportRateCardConsultationCsv,
+  exportCostsPerLabCsv,
 } from '../engine/exportEngine';
-import { importExcelWorkbook, ImportResultSummary } from '../engine/importEngine';
+import { importSpreadsheetFile, ImportResultSummary } from '../engine/importEngine';
+import {
+  getCloudSyncConfig,
+  saveCloudSyncConfig,
+  testGoogleSheetsConnection,
+  pushToGoogleSheets,
+  pullFromGoogleSheets,
+  getGoogleAppsScriptCode,
+  CloudSyncConfig,
+} from '../db/cloudSync';
 import { seedDatabase } from '../db/seed';
 import { useAppStore } from '../store/useAppStore';
 import {
@@ -19,27 +30,38 @@ import {
   CheckCircle,
   AlertCircle,
   FileText,
-  Table,
-  Sparkles,
-  ArrowRight,
   ShieldAlert,
-  Layers,
-  Calendar,
   AlertTriangle,
+  Cloud,
+  RefreshCw,
+  ExternalLink,
+  Copy,
+  Check,
+  Code,
+  X,
+  Sliders,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 
 export const DataExport: React.FC = () => {
-  const { setMetaStatus } = useAppStore();
-  const jsonFileInputRef = useRef<HTMLInputElement>(null);
-  const excelFileInputRef = useRef<HTMLInputElement>(null);
+  const { setMetaStatus, setActiveTab } = useAppStore();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [importMode, setImportMode] = useState<'MERGE' | 'OVERWRITE'>('MERGE');
   const [importSummary, setImportSummary] = useState<ImportResultSummary | null>(null);
-  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(
     null
   );
+
+  // Google Sheets state
+  const [cloudConfig, setCloudConfig] = useState<CloudSyncConfig>(() => getCloudSyncConfig());
+  const [showAppsScriptModal, setShowAppsScriptModal] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [sheetsSyncStatus, setSheetsSyncStatus] = useState<{
+    type: 'idle' | 'syncing' | 'success' | 'error';
+    text: string;
+  }>({ type: 'idle', text: '' });
 
   // Table counts for audit overview
   const branchCount = useLiveQuery(() => db.branches.count());
@@ -51,11 +73,17 @@ export const DataExport: React.FC = () => {
   const slotCount = useLiveQuery(() => db.dialysisSlots.count());
   const capacityCount = useLiveQuery(() => db.capacityLogs.count());
 
+  // ----------------------------------------------------
+  // TEMPLATE & EXPORT HANDLERS (.XLSX & .CSV ONLY)
+  // ----------------------------------------------------
   const handleDownloadTemplate = async () => {
     setLoadingAction('template');
     try {
       await downloadExcelImportTemplate();
-      setFeedback({ type: 'success', message: 'Downloaded 5-tab Excel import template (Clinic_Data_Import_Template.xlsx)!' });
+      setFeedback({
+        type: 'success',
+        message: 'Downloaded standardized 3-sheet Excel template (Clinic_Data_Import_Template.xlsx)!',
+      });
     } catch (err: any) {
       setFeedback({ type: 'error', message: err?.message || 'Failed to download template.' });
     } finally {
@@ -63,11 +91,14 @@ export const DataExport: React.FC = () => {
     }
   };
 
-  const handleExportExcel = async () => {
+  const handleExportExcelMaster = async () => {
     setLoadingAction('excel');
     try {
       await exportFullExcelWorkbook();
-      setFeedback({ type: 'success', message: '8-tab Master Excel workbook exported successfully!' });
+      setFeedback({
+        type: 'success',
+        message: 'Full master workbook (.xlsx) exported successfully with Dialysis Slots, Rate Card & Consultation, and Costs per Lab!',
+      });
     } catch (err: any) {
       setFeedback({ type: 'error', message: err?.message || 'Failed to generate Excel file.' });
     } finally {
@@ -75,59 +106,99 @@ export const DataExport: React.FC = () => {
     }
   };
 
-  const handleExportCsv = async () => {
-    setLoadingAction('csv');
+  const handleExportDialysisCsv = async () => {
+    setLoadingAction('csv-dialysis');
+    try {
+      await exportDialysisSlotsCsv();
+      setFeedback({ type: 'success', message: 'Occupied dialysis slots CSV exported successfully!' });
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err?.message || 'Failed to export Dialysis CSV.' });
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const handleExportRateCardCsv = async () => {
+    setLoadingAction('csv-ratecard');
+    try {
+      await exportRateCardConsultationCsv();
+      setFeedback({ type: 'success', message: 'Rate card & consultation revenue models CSV exported successfully!' });
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err?.message || 'Failed to export Rate Card CSV.' });
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const handleExportCostsCsv = async () => {
+    setLoadingAction('csv-costs');
+    try {
+      await exportCostsPerLabCsv();
+      setFeedback({ type: 'success', message: 'Department & lab OPEX costs CSV exported successfully!' });
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err?.message || 'Failed to export Costs per Lab CSV.' });
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const handleExportDailyCsv = async () => {
+    setLoadingAction('csv-daily');
     try {
       await exportDailyEntriesCsv();
-      setFeedback({ type: 'success', message: 'Daily department entries CSV downloaded successfully!' });
+      setFeedback({ type: 'success', message: 'Daily department entries CSV exported successfully!' });
     } catch (err: any) {
-      setFeedback({ type: 'error', message: err?.message || 'Failed to export CSV.' });
+      setFeedback({ type: 'error', message: err?.message || 'Failed to export Daily Revenue CSV.' });
     } finally {
       setLoadingAction(null);
     }
   };
 
-  const handleExportJson = async () => {
-    setLoadingAction('json');
-    try {
-      await triggerJsonBackupDownload();
-      setFeedback({ type: 'success', message: 'Full database JSON backup snapshot downloaded!' });
-    } catch (err: any) {
-      setFeedback({ type: 'error', message: err?.message || 'Failed to export JSON backup.' });
-    } finally {
-      setLoadingAction(null);
-    }
-  };
-
-  const handleImportExcelFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // ----------------------------------------------------
+  // IMPORT HANDLER (.XLSX OR .CSV ONLY — JSON STRICTLY REJECTED)
+  // ----------------------------------------------------
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    const lowerName = file.name.toLowerCase();
+
+    // Explicit check against JSON files
+    if (lowerName.endsWith('.json') || file.type === 'application/json' || file.type.includes('json')) {
+      setFeedback({
+        type: 'error',
+        message: 'JSON files are not accepted. Only .xlsx (Excel) or .csv (Comma-Separated Values) files can be imported.',
+      });
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
     if (importMode === 'OVERWRITE') {
       const confirm = window.confirm(
-        'CAUTION: You selected OVERWRITE mode. Existing daily department entries, dialysis slots, and department costs will be replaced with data from this workbook. Continue?'
+        'CAUTION: You selected OVERWRITE mode. Existing records matching the imported sheet tables will be replaced. Continue?'
       );
       if (!confirm) {
-        if (excelFileInputRef.current) excelFileInputRef.current.value = '';
+        if (fileInputRef.current) fileInputRef.current.value = '';
         return;
       }
     }
 
-    setLoadingAction('excel-import');
+    setLoadingAction('file-import');
     setImportSummary(null);
+
     try {
-      const result = await importExcelWorkbook(file, importMode);
+      const result = await importSpreadsheetFile(file, importMode);
       setImportSummary(result);
       if (result.success) {
         setMetaStatus(true, true);
         setFeedback({
           type: 'success',
-          message: `Excel import succeeded (${result.mode} mode)! See detailed audit summary below.`,
+          message: `Spreadsheet import succeeded (${result.mode} mode)! See audit summary below.`,
         });
       } else {
         setFeedback({
           type: 'error',
-          message: result.errors[0] || 'Excel import failed. Check file structure.',
+          message: result.errors[0] || 'Import failed. Check file structure.',
         });
       }
     } catch (err: any) {
@@ -137,36 +208,78 @@ export const DataExport: React.FC = () => {
       });
     } finally {
       setLoadingAction(null);
-      if (excelFileInputRef.current) excelFileInputRef.current.value = '';
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  const handleImportJsonFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // ----------------------------------------------------
+  // GOOGLE SHEETS SYNC HANDLERS
+  // ----------------------------------------------------
+  const handleUpdateGoogleUrl = (url: string) => {
+    const updated: CloudSyncConfig = {
+      ...cloudConfig,
+      provider: 'googlesheets',
+      googleAppsScriptUrl: url,
+    };
+    setCloudConfig(updated);
+    saveCloudSyncConfig(updated);
+  };
 
-    setLoadingAction('import');
-    try {
-      const text = await file.text();
-      await db.restoreFromJsonBackup(text);
-      setMetaStatus(true, true);
-      setFeedback({
-        type: 'success',
-        message: 'Successfully restored all IndexedDB tables from backup JSON! Refreshing view...',
-      });
-      setTimeout(() => window.location.reload(), 1500);
-    } catch (err: any) {
-      setFeedback({
-        type: 'error',
-        message: `Restore failed: ${err?.message || 'Invalid or corrupted JSON backup file.'}`,
-      });
-    } finally {
-      setLoadingAction(null);
-      if (jsonFileInputRef.current) jsonFileInputRef.current.value = '';
+  const handleTestGoogleSheets = async () => {
+    setSheetsSyncStatus({ type: 'syncing', text: 'Testing Google Sheets connection...' });
+    const res = await testGoogleSheetsConnection();
+    setSheetsSyncStatus({
+      type: res.success ? 'success' : 'error',
+      text: res.message,
+    });
+  };
+
+  const handlePushToGoogleSheets = async () => {
+    setSheetsSyncStatus({ type: 'syncing', text: 'Pushing Dialysis Slots, Rate Card, and Lab Costs to Google Sheets...' });
+    const res = await pushToGoogleSheets();
+    if (res.success) {
+      const refreshed = getCloudSyncConfig();
+      setCloudConfig(refreshed);
+      setSheetsSyncStatus({ type: 'success', text: res.message });
+      setFeedback({ type: 'success', message: 'Successfully synced all records to Google Sheets!' });
+    } else {
+      setSheetsSyncStatus({ type: 'error', text: res.message });
+      setFeedback({ type: 'error', message: res.message });
     }
+  };
+
+  const handlePullFromGoogleSheets = async () => {
+    const proceed = window.confirm(
+      'Notice: Pulling from Google Sheets will merge remote sheets (Dialysis Slots, Rate Card & Consultation, Costs per Lab) into your local browser database. Proceed?'
+    );
+    if (!proceed) return;
+
+    setSheetsSyncStatus({ type: 'syncing', text: 'Pulling latest spreadsheet tabs from Google Sheets...' });
+    const res = await pullFromGoogleSheets();
+    if (res.success) {
+      const refreshed = getCloudSyncConfig();
+      setCloudConfig(refreshed);
+      setSheetsSyncStatus({ type: 'success', text: res.message });
+      setFeedback({ type: 'success', message: res.message });
+      setTimeout(() => window.location.reload(), 1500);
+    } else {
+      setSheetsSyncStatus({ type: 'error', text: res.message });
+      setFeedback({ type: 'error', message: res.message });
+    }
+  };
+
+  const handleCopyAppsScript = () => {
+    navigator.clipboard.writeText(getGoogleAppsScriptCode());
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2500);
   };
 
   const handleResetSample = async () => {
+    const confirm = window.confirm(
+      'Are you sure you want to revert all changes and reset to the deterministic 6-month seed dataset?'
+    );
+    if (!confirm) return;
+
     setLoadingAction('reset');
     try {
       await seedDatabase(true);
@@ -185,21 +298,21 @@ export const DataExport: React.FC = () => {
 
   return (
     <div className="space-y-8">
-      {/* Status Alert */}
+      {/* Status Alert Banner */}
       {feedback && (
         <div
-          className={`p-4 rounded-xl text-xs font-semibold flex items-center justify-between shadow-xs ${
+          className={`p-4 rounded-xl text-xs font-semibold flex items-center justify-between shadow-xs transition-all ${
             feedback.type === 'success'
               ? 'bg-emerald-50 text-emerald-900 border border-emerald-200'
+              : feedback.type === 'warning'
+              ? 'bg-amber-50 text-amber-900 border border-amber-200'
               : 'bg-rose-50 text-rose-900 border border-rose-200'
           }`}
         >
           <div className="flex items-center gap-2">
-            {feedback.type === 'success' ? (
-              <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />
-            ) : (
-              <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
-            )}
+            {feedback.type === 'success' && <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />}
+            {feedback.type === 'warning' && <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />}
+            {feedback.type === 'error' && <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />}
             <span>{feedback.message}</span>
           </div>
           <button
@@ -213,7 +326,131 @@ export const DataExport: React.FC = () => {
       )}
 
       {/* ==================================================== */}
-      {/* 1. BI-DIRECTIONAL EXCEL (.XLSX) BULK IMPORT WORKFLOW */}
+      {/* 1. GOOGLE SHEETS LIVE SYNC INTEGRATION               */}
+      {/* ==================================================== */}
+      <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs">
+        <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-teal-50 text-teal-700">
+              <Cloud className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                Google Sheets Bi-Directional Synchronization
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-teal-50 text-teal-700 border border-teal-200">
+                  Cloud Live Sync
+                </span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Sync Dialysis Slots, Rate Card & Consultation Revenue, and Costs per Lab directly with your Google Sheet.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAppsScriptModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 transition-colors cursor-pointer"
+            >
+              <Code className="w-4 h-4 text-slate-500" />
+              <span>Apps Script Connector Code</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('capacity')}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 transition-colors cursor-pointer"
+              title="Open full cloud sync settings"
+            >
+              <Sliders className="w-4 h-4 text-slate-500" />
+              <span>Sync Settings</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Sync Controls & URL Configuration */}
+        <div className="mt-5 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Google Apps Script Web App URL:
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="url"
+                  placeholder="https://script.google.com/macros/s/AKfycb.../exec"
+                  value={cloudConfig.googleAppsScriptUrl || ''}
+                  onChange={(e) => handleUpdateGoogleUrl(e.target.value)}
+                  className="flex-1 px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white font-mono focus:ring-1 focus:ring-teal-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleTestGoogleSheets}
+                  disabled={!cloudConfig.googleAppsScriptUrl || sheetsSyncStatus.type === 'syncing'}
+                  className="px-3.5 py-2 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg border border-slate-300 transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  Test Connection
+                </button>
+              </div>
+              <span className="text-[11px] text-slate-400 mt-1 block">
+                Deploy as Web App in your Google Sheet (Extensions &gt; Apps Script), then paste the URL here.
+              </span>
+            </div>
+
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-col justify-between">
+              <div className="text-xs">
+                <span className="text-slate-400 block text-[10px] uppercase font-semibold">Last Cloud Sync</span>
+                <span className="font-bold text-slate-800">
+                  {cloudConfig.lastSyncAt
+                    ? format(parseISO(cloudConfig.lastSyncAt), 'dd MMM yyyy, HH:mm:ss')
+                    : 'Never Synced'}
+                </span>
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handlePushToGoogleSheets}
+                  disabled={!cloudConfig.googleAppsScriptUrl || sheetsSyncStatus.type === 'syncing'}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 shadow-xs cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Push to Sheet</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePullFromGoogleSheets}
+                  disabled={!cloudConfig.googleAppsScriptUrl || sheetsSyncStatus.type === 'syncing'}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 shadow-xs cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Pull from Sheet</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Sync status alert */}
+          {sheetsSyncStatus.text && (
+            <div
+              className={`p-3 rounded-lg text-xs font-semibold flex items-center gap-2 ${
+                sheetsSyncStatus.type === 'success'
+                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                  : sheetsSyncStatus.type === 'error'
+                  ? 'bg-rose-50 text-rose-800 border border-rose-200'
+                  : 'bg-teal-50 text-teal-800 border border-teal-200 animate-pulse'
+              }`}
+            >
+              {sheetsSyncStatus.type === 'success' && <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />}
+              {sheetsSyncStatus.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />}
+              {sheetsSyncStatus.type === 'syncing' && <RefreshCw className="w-4 h-4 text-teal-600 animate-spin shrink-0" />}
+              <span>{sheetsSyncStatus.text}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ==================================================== */}
+      {/* 2. SPREADSHEET (.XLSX / .CSV) BULK IMPORT WORKFLOW   */}
       {/* ==================================================== */}
       <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
@@ -223,13 +460,13 @@ export const DataExport: React.FC = () => {
             </div>
             <div>
               <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                Bi-Directional Excel (.xlsx) Import & Template Generator
+                Bi-Directional Spreadsheet Import (.xlsx &amp; .csv)
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
                   Bulk Operations
                 </span>
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Download the standardized 5-tab spreadsheet template, fill or update operational records, and import directly into the browser database.
+                Download the 3-sheet template, update records, and import directly into the browser database. Accepts <strong>.xlsx</strong> and <strong>.csv</strong> files.
               </p>
             </div>
           </div>
@@ -242,8 +479,27 @@ export const DataExport: React.FC = () => {
               className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold rounded-lg border border-emerald-200 transition-colors cursor-pointer"
             >
               <Download className="w-4 h-4 text-emerald-600" />
-              <span>{loadingAction === 'template' ? 'Generating...' : 'Download 5-Tab Template'}</span>
+              <span>{loadingAction === 'template' ? 'Generating...' : 'Download 3-Sheet Template (.xlsx)'}</span>
             </button>
+          </div>
+        </div>
+
+        {/* 3-Tab Structure Explanation Banner */}
+        <div className="mt-4 p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs">
+          <span className="font-bold text-slate-800 block mb-1">Standardized 3-Sheet Workbook Structure:</span>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-slate-600">
+            <div className="p-2 bg-white rounded border border-slate-200">
+              <strong className="text-teal-700 block text-[11px] uppercase">Sheet 1: Dialysis_Slots</strong>
+              <span className="text-[11px]">Machine &amp; shift bookings, slot types (STANDARD/SINGLE_USE), and applied INR rates.</span>
+            </div>
+            <div className="p-2 bg-white rounded border border-slate-200">
+              <strong className="text-teal-700 block text-[11px] uppercase">Sheet 2: RateCard_Consultation</strong>
+              <span className="text-[11px]">Service price catalog, doctor compensation models (share % / retainer), and consultation fees.</span>
+            </div>
+            <div className="p-2 bg-white rounded border border-slate-200">
+              <strong className="text-teal-700 block text-[11px] uppercase">Sheet 3: Costs_Per_Lab</strong>
+              <span className="text-[11px]">Department and lab OPEX breakdown: Rent, Electricity, Staffing, Consumables, and Licensing.</span>
+            </div>
           </div>
         </div>
 
@@ -270,7 +526,7 @@ export const DataExport: React.FC = () => {
                     <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700">Safe</span>
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1">
-                    Updates existing records and appends new rows without wiping other dates.
+                    Updates existing records and appends new rows without wiping other tables.
                   </p>
                 </button>
 
@@ -303,30 +559,31 @@ export const DataExport: React.FC = () => {
           {/* File Upload Drop Area */}
           <div className="p-4 bg-slate-50/70 border border-slate-200 rounded-xl flex flex-col justify-between">
             <div>
-              <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider block mb-2">
-                Step 2: Upload Excel File (.xlsx)
+              <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider block mb-1">
+                Step 2: Upload Spreadsheet (.xlsx or .csv)
               </span>
               <p className="text-xs text-slate-500 mb-3">
-                Supports official template or exported master workbooks.
+                Upload 3-sheet <strong>.xlsx</strong> template or individual dataset <strong>.csv</strong> file.
+                <span className="text-rose-600 font-semibold block mt-0.5">Note: JSON files are strictly not accepted.</span>
               </p>
             </div>
 
             <input
               type="file"
-              accept=".xlsx,.xls"
-              ref={excelFileInputRef}
-              onChange={handleImportExcelFile}
+              accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              ref={fileInputRef}
+              onChange={handleImportFile}
               className="hidden"
             />
 
             <button
               type="button"
-              onClick={() => excelFileInputRef.current?.click()}
-              disabled={loadingAction === 'excel-import'}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loadingAction === 'file-import'}
               className="w-full py-4 px-4 border-2 border-dashed border-teal-300 hover:border-teal-500 bg-teal-50/40 hover:bg-teal-50/70 rounded-xl flex items-center justify-center gap-2 text-teal-800 font-bold text-xs transition-all cursor-pointer"
             >
-              <Upload className={`w-4 h-4 ${loadingAction === 'excel-import' ? 'animate-bounce' : ''}`} />
-              <span>{loadingAction === 'excel-import' ? 'Parsing & Saving...' : 'Click to Browse & Import .xlsx'}</span>
+              <Upload className={`w-4 h-4 ${loadingAction === 'file-import' ? 'animate-bounce' : ''}`} />
+              <span>{loadingAction === 'file-import' ? 'Parsing & Saving...' : 'Click to Browse & Import (.xlsx or .csv)'}</span>
             </button>
           </div>
         </div>
@@ -338,7 +595,7 @@ export const DataExport: React.FC = () => {
               <div className="flex items-center gap-2">
                 <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />
                 <h4 className="font-bold text-slate-900 text-xs uppercase tracking-wider">
-                  Excel Import Audit Trail Summary
+                  Spreadsheet Import Audit Trail
                 </h4>
               </div>
               <span className="text-[11px] text-slate-500 font-medium">
@@ -348,24 +605,24 @@ export const DataExport: React.FC = () => {
 
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
               <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
-                <span className="text-[10px] uppercase font-semibold text-slate-400">Daily Entries</span>
-                <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.dailyEntries}</p>
-              </div>
-              <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
                 <span className="text-[10px] uppercase font-semibold text-slate-400">Dialysis Slots</span>
                 <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.dialysisSlots}</p>
               </div>
               <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
-                <span className="text-[10px] uppercase font-semibold text-slate-400">Dept Costs</span>
+                <span className="text-[10px] uppercase font-semibold text-slate-400">Rate Items</span>
+                <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.serviceCatalog}</p>
+              </div>
+              <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
+                <span className="text-[10px] uppercase font-semibold text-slate-400">Lab Costs</span>
                 <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.departmentCosts}</p>
               </div>
               <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
-                <span className="text-[10px] uppercase font-semibold text-slate-400">Monthly Costs</span>
+                <span className="text-[10px] uppercase font-semibold text-slate-400">Monthly OPEX</span>
                 <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.monthlyCosts}</p>
               </div>
               <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
-                <span className="text-[10px] uppercase font-semibold text-slate-400">Service Items</span>
-                <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.serviceCatalog}</p>
+                <span className="text-[10px] uppercase font-semibold text-slate-400">Daily Revenue</span>
+                <p className="text-base font-bold text-slate-900">{importSummary.auditCounts.dailyEntries}</p>
               </div>
               <div className="p-2.5 bg-white border border-teal-200 rounded-lg text-center">
                 <span className="text-[10px] uppercase font-semibold text-slate-400">Overrides</span>
@@ -382,12 +639,12 @@ export const DataExport: React.FC = () => {
               <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2 text-xs text-amber-800">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
                 <span>
-                  <strong>Sunday Safety Rule Applied:</strong> {importSummary.skippedSundaysCount} Sunday dialysis booking rows in the spreadsheet were safely excluded from capacity.
+                  <strong>Sunday Safety Rule Applied:</strong> {importSummary.skippedSundaysCount} Sunday dialysis booking rows in the spreadsheet were safely excluded.
                 </span>
               </div>
             )}
 
-            {/* Warnings list */}
+            {/* Parser Audit Notes */}
             {importSummary.warnings.length > 0 && (
               <div className="text-[11px] text-slate-600 space-y-1 pt-1 border-t border-teal-100">
                 <span className="font-semibold text-slate-700 block">Parser Audit Notes:</span>
@@ -404,7 +661,7 @@ export const DataExport: React.FC = () => {
       </div>
 
       {/* ==================================================== */}
-      {/* 2. LOCAL DATABASE LIVE INVENTORY                     */}
+      {/* 3. LOCAL DATABASE LIVE INVENTORY                     */}
       {/* ==================================================== */}
       <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
         <div className="flex items-center gap-2 mb-4">
@@ -427,7 +684,7 @@ export const DataExport: React.FC = () => {
             <p className="text-lg font-bold text-slate-900 mt-0.5">{overrideCount ?? '—'}</p>
           </div>
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
-            <span className="text-[10px] uppercase font-semibold text-slate-500">Dept Costs</span>
+            <span className="text-[10px] uppercase font-semibold text-slate-500">Lab Costs</span>
             <p className="text-lg font-bold text-slate-900 mt-0.5">{deptCostCount ?? '—'}</p>
           </div>
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-center">
@@ -450,106 +707,128 @@ export const DataExport: React.FC = () => {
       </div>
 
       {/* ==================================================== */}
-      {/* 3. EXPORT & BACKUP CARDS                             */}
+      {/* 4. EXPORT WORKBOOK & CSV CARDS (.XLSX & .CSV ONLY)   */}
       {/* ==================================================== */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {/* 1. Multi-tab Excel */}
-        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex flex-col justify-between">
-          <div>
-            <div className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center mb-3">
-              <FileSpreadsheet className="w-5 h-5" />
+      <div>
+        <h3 className="font-bold text-slate-900 text-sm mb-3">
+          Export &amp; Offline Backup Options (.xlsx and .csv only)
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+          {/* 1. Master Excel Backup */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
+            <div>
+              <div className="w-9 h-9 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center mb-2.5">
+                <FileSpreadsheet className="w-5 h-5" />
+              </div>
+              <h4 className="font-bold text-slate-900 text-xs">Master Backup (.xlsx)</h4>
+              <p className="text-[11px] text-slate-500 mt-1 mb-3">
+                Full 3-sheet backup workbook including Dialysis Slots, Rate Card &amp; Consultation, and Costs per Lab.
+              </p>
             </div>
-            <h4 className="font-bold text-slate-900 text-sm">Export Full Excel Workbook</h4>
-            <p className="text-xs text-slate-500 mt-1 mb-4">
-              Generates an 8-tab `.xlsx` master file containing Branches, Rate Card, Overrides, Department Costs, Monthly OPEX, Department Profitability, Daily Revenue, and Dialysis Sessions.
-            </p>
+            <button
+              type="button"
+              onClick={handleExportExcelMaster}
+              disabled={loadingAction === 'excel'}
+              className="w-full flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{loadingAction === 'excel' ? 'Exporting...' : 'Export .xlsx'}</span>
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={handleExportExcel}
-            disabled={loadingAction === 'excel'}
-            className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs py-2.5 rounded-lg transition-colors shadow-xs cursor-pointer"
-          >
-            <Download className="w-4 h-4" />
-            <span>{loadingAction === 'excel' ? 'Exporting...' : 'Download 8-Tab .xlsx'}</span>
-          </button>
-        </div>
 
-        {/* 2. CSV Export */}
-        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex flex-col justify-between">
-          <div>
-            <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center mb-3">
-              <FileText className="w-5 h-5" />
+          {/* 2. Dialysis Slots CSV */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
+            <div>
+              <div className="w-9 h-9 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center mb-2.5">
+                <FileText className="w-5 h-5" />
+              </div>
+              <h4 className="font-bold text-slate-900 text-xs">Dialysis Slots (.csv)</h4>
+              <p className="text-[11px] text-slate-500 mt-1 mb-3">
+                Occupied dialysis station shift bookings, slot types, and applied rates as clean CSV records.
+              </p>
             </div>
-            <h4 className="font-bold text-slate-900 text-sm">Export Daily Revenue CSV</h4>
-            <p className="text-xs text-slate-500 mt-1 mb-4">
-              Extracts granular daily clinical test encounters, patient footfall, applied rates, and doctor payouts as clean `.csv` records.
-            </p>
+            <button
+              type="button"
+              onClick={handleExportDialysisCsv}
+              disabled={loadingAction === 'csv-dialysis'}
+              className="w-full flex items-center justify-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{loadingAction === 'csv-dialysis' ? 'Exporting...' : 'Export CSV'}</span>
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={handleExportCsv}
-            disabled={loadingAction === 'csv'}
-            className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs py-2.5 rounded-lg transition-colors shadow-xs cursor-pointer"
-          >
-            <Download className="w-4 h-4" />
-            <span>{loadingAction === 'csv' ? 'Exporting...' : 'Download .csv'}</span>
-          </button>
-        </div>
 
-        {/* 3. JSON Backup State */}
-        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex flex-col justify-between">
-          <div>
-            <div className="w-10 h-10 rounded-lg bg-teal-50 text-teal-700 flex items-center justify-center mb-3">
-              <Database className="w-5 h-5" />
+          {/* 3. Rate Card & Consultation CSV */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
+            <div>
+              <div className="w-9 h-9 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center mb-2.5">
+                <FileText className="w-5 h-5" />
+              </div>
+              <h4 className="font-bold text-slate-900 text-xs">Rate Card &amp; Fees (.csv)</h4>
+              <p className="text-[11px] text-slate-500 mt-1 mb-3">
+                Complete service catalog, doctor consultation fees, and doctor remuneration percentage share models.
+              </p>
             </div>
-            <h4 className="font-bold text-slate-900 text-sm">Full State Backup (JSON)</h4>
-            <p className="text-xs text-slate-500 mt-1 mb-4">
-              Dumps 100% of the IndexedDB state into a portable `.json` file for zero-data-loss backup, device migration, or offline archiving.
-            </p>
+            <button
+              type="button"
+              onClick={handleExportRateCardCsv}
+              disabled={loadingAction === 'csv-ratecard'}
+              className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{loadingAction === 'csv-ratecard' ? 'Exporting...' : 'Export CSV'}</span>
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={handleExportJson}
-            disabled={loadingAction === 'json'}
-            className="w-full flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs py-2.5 rounded-lg transition-colors shadow-xs cursor-pointer"
-          >
-            <Download className="w-4 h-4" />
-            <span>{loadingAction === 'json' ? 'Dumping...' : 'Export JSON State'}</span>
-          </button>
-        </div>
 
-        {/* 4. JSON Restore State */}
-        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs flex flex-col justify-between">
-          <div>
-            <div className="w-10 h-10 rounded-lg bg-purple-50 text-purple-700 flex items-center justify-center mb-3">
-              <Upload className="w-5 h-5" />
+          {/* 4. Costs Per Lab CSV */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
+            <div>
+              <div className="w-9 h-9 rounded-lg bg-purple-50 text-purple-700 flex items-center justify-center mb-2.5">
+                <FileText className="w-5 h-5" />
+              </div>
+              <h4 className="font-bold text-slate-900 text-xs">Costs Per Lab (.csv)</h4>
+              <p className="text-[11px] text-slate-500 mt-1 mb-3">
+                Operational cost buckets per department (Blood Test, USG, X-Ray, Physio, Dialysis).
+              </p>
             </div>
-            <h4 className="font-bold text-slate-900 text-sm">Restore State (JSON)</h4>
-            <p className="text-xs text-slate-500 mt-1 mb-4">
-              Select a previously exported `.json` file. Validates schema and bulk-reloads all tables directly into IndexedDB.
-            </p>
+            <button
+              type="button"
+              onClick={handleExportCostsCsv}
+              disabled={loadingAction === 'csv-costs'}
+              className="w-full flex items-center justify-center gap-1.5 bg-purple-600 hover:bg-purple-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{loadingAction === 'csv-costs' ? 'Exporting...' : 'Export CSV'}</span>
+            </button>
           </div>
-          <input
-            type="file"
-            accept=".json,application/json"
-            ref={jsonFileInputRef}
-            onChange={handleImportJsonFile}
-            className="hidden"
-          />
-          <button
-            type="button"
-            onClick={() => jsonFileInputRef.current?.click()}
-            disabled={loadingAction === 'import'}
-            className="w-full flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 text-white font-semibold text-xs py-2.5 rounded-lg transition-colors shadow-xs cursor-pointer"
-          >
-            <Upload className="w-4 h-4" />
-            <span>{loadingAction === 'import' ? 'Validating...' : 'Select JSON to Restore'}</span>
-          </button>
+
+          {/* 5. Daily Revenue CSV */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs flex flex-col justify-between">
+            <div>
+              <div className="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center mb-2.5">
+                <FileText className="w-5 h-5" />
+              </div>
+              <h4 className="font-bold text-slate-900 text-xs">Daily Revenue (.csv)</h4>
+              <p className="text-[11px] text-slate-500 mt-1 mb-3">
+                Granular daily patient encounters, test counts, applied fees, and calculated gross revenues.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleExportDailyCsv}
+              disabled={loadingAction === 'csv-daily'}
+              className="w-full flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs py-2 rounded-lg transition-colors shadow-xs cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{loadingAction === 'csv-daily' ? 'Exporting...' : 'Export CSV'}</span>
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Danger Zone: Seed Reset */}
+      {/* ==================================================== */}
+      {/* 5. DANGER ZONE: SEED RESET                          */}
+      {/* ==================================================== */}
       <div className="bg-rose-50/60 border border-rose-200 rounded-xl p-5 shadow-xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
@@ -572,6 +851,69 @@ export const DataExport: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* ==================================================== */}
+      {/* MODAL: GOOGLE APPS SCRIPT CONNECTOR CODE            */}
+      {/* ==================================================== */}
+      {showAppsScriptModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Cloud className="w-5 h-5 text-teal-400" />
+                <h3 className="font-bold text-sm">Google Sheets Apps Script Connector</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAppsScriptModal(false)}
+                className="text-slate-400 hover:text-white font-bold p-1 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4 text-xs text-slate-600">
+              <p className="text-slate-700 font-medium">
+                Follow these 4 simple steps to connect any Google Sheet to this dashboard with zero server requirements:
+              </p>
+              <ol className="list-decimal list-inside space-y-1.5 text-slate-600 pl-1">
+                <li>Create a new Google Sheet or open your existing clinic spreadsheet.</li>
+                <li>In Google Sheets, click <strong>Extensions &gt; Apps Script</strong>.</li>
+                <li>Delete any code in the editor and paste the connector script below.</li>
+                <li>Click <strong>Deploy &gt; New deployment</strong>, select type <strong>Web app</strong>, choose <strong>Execute as: Me</strong>, and set <strong>Who has access: Anyone</strong>.</li>
+                <li>Copy the resulting Web App URL and paste it into the Sync URL box.</li>
+              </ol>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-semibold text-slate-800">Connector Code (Copy &amp; Paste):</span>
+                  <button
+                    type="button"
+                    onClick={handleCopyAppsScript}
+                    className="flex items-center gap-1 px-2.5 py-1 bg-teal-50 hover:bg-teal-100 text-teal-800 rounded font-semibold transition-colors cursor-pointer"
+                  >
+                    {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedCode ? 'Copied to Clipboard!' : 'Copy Code'}</span>
+                  </button>
+                </div>
+                <pre className="p-3 bg-slate-900 text-slate-200 rounded-lg font-mono text-[11px] overflow-x-auto max-h-64 border border-slate-800 select-all">
+                  {getGoogleAppsScriptCode()}
+                </pre>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowAppsScriptModal(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg font-semibold text-xs cursor-pointer"
+              >
+                Close Window
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

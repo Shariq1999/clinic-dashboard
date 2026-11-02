@@ -15,100 +15,90 @@ function setColWidths(ws: XLSX.WorkSheet, data: any[]) {
   ws['!cols'] = colWidths;
 }
 
-// 1. DOWNLOAD OFFICIAL 5-TAB IMPORT TEMPLATE
+// Helper to trigger browser download of CSV string
+function downloadCsvBlob(csvContent: string, fileName: string) {
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ----------------------------------------------------------------------
+// 1. DOWNLOAD OFFICIAL 3-TAB IMPORT TEMPLATE (.XLSX)
+// Sheet 1: Dialysis_Slots
+// Sheet 2: RateCard_Consultation
+// Sheet 3: Costs_Per_Lab
+// ----------------------------------------------------------------------
 export async function downloadExcelImportTemplate(): Promise<void> {
-  const [branches, catalog] = await Promise.all([
+  const [branches, catalog, overrides] = await Promise.all([
     db.branches.toArray(),
     db.serviceCatalog.toArray(),
+    db.rateOverrides.toArray(),
   ]);
 
+  const branchCodeMap = new Map(branches.map((b) => [b.id, b.code]));
   const wb = XLSX.utils.book_new();
 
-  // Tab 1: INSTRUCTIONS
-  const instructionsData = [
-    {
-      Section: '1. General Instructions',
-      Details: 'This Excel template is designed for seamless bi-directional import into the ClinicChain Dashboard. You can edit existing rows or append new data.',
-    },
-    {
-      Section: '2. Branch Codes',
-      Details: `Valid Branch Codes: ${branches.map((b) => `${b.code} (${b.name})`).join(', ')}. Branch code mapping is case-insensitive.`,
-    },
-    {
-      Section: '3. Date Formats',
-      Details: 'Dates must follow YYYY-MM-DD (e.g. 2026-05-15). Months must follow YYYY-MM (e.g. 2026-05).',
-    },
-    {
-      Section: '4. Sunday Safety Lock',
-      Details: 'Dialysis shifts on Sundays are strictly excluded by clinical safety policy and will be automatically skipped upon import.',
-    },
-    {
-      Section: '5. Auto Calculations',
-      Details: 'If Applied_Rate is left blank in Daily_Dept_Revenue, the system automatically pulls the active price from the Rate Card and computes Doctor Remuneration.',
-    },
-    {
-      Section: '6. Import Modes',
-      Details: 'MERGE mode will upsert records without deleting existing entries. OVERWRITE mode will replace existing table data.',
-    },
+  // Tab 1: Dialysis_Slots (dialysis slots in one sheet)
+  const sampleDialysisSlots = [
+    { Date: '2026-05-02', Branch_Code: 'DUS', Machine_Index: 1, Shift_Index: 1, Slot_Type: 'STANDARD', Applied_Rate: 1800, Patient_Status: 'Occupied' },
+    { Date: '2026-05-02', Branch_Code: 'DUS', Machine_Index: 1, Shift_Index: 2, Slot_Type: 'STANDARD', Applied_Rate: 1800, Patient_Status: 'Occupied' },
+    { Date: '2026-05-02', Branch_Code: 'DUS', Machine_Index: 2, Shift_Index: 1, Slot_Type: 'SINGLE_USE', Applied_Rate: 2200, Patient_Status: 'Occupied' },
+    { Date: '2026-05-02', Branch_Code: 'DUS', Machine_Index: 2, Shift_Index: 2, Slot_Type: 'STANDARD', Applied_Rate: 1800, Patient_Status: 'Occupied' },
+    { Date: '2026-05-02', Branch_Code: 'SDC', Machine_Index: 1, Shift_Index: 1, Slot_Type: 'STANDARD', Applied_Rate: 1800, Patient_Status: 'Occupied' },
+    { Date: '2026-05-02', Branch_Code: 'SDC', Machine_Index: 1, Shift_Index: 2, Slot_Type: 'STANDARD', Applied_Rate: 1800, Patient_Status: 'Occupied' },
+    { Date: '2026-05-04', Branch_Code: 'DUS', Machine_Index: 1, Shift_Index: 1, Slot_Type: 'STANDARD', Applied_Rate: 1800, Patient_Status: 'Occupied' },
+    { Date: '2026-05-04', Branch_Code: 'DUS', Machine_Index: 2, Shift_Index: 1, Slot_Type: 'STANDARD', Applied_Rate: 1800, Patient_Status: 'Occupied' },
   ];
-  const wsInstructions = XLSX.utils.json_to_sheet(instructionsData);
-  setColWidths(wsInstructions, instructionsData);
-  XLSX.utils.book_append_sheet(wb, wsInstructions, 'INSTRUCTIONS');
+  const wsDialysis = XLSX.utils.json_to_sheet(sampleDialysisSlots);
+  setColWidths(wsDialysis, sampleDialysisSlots);
+  XLSX.utils.book_append_sheet(wb, wsDialysis, 'Dialysis_Slots');
 
-  // Tab 2: Daily_Dept_Revenue
-  const sampleDaily = [
-    { Date: '2026-05-02', Branch_Code: 'DUS', Department: 'BLOOD_TEST', Service_Name: 'CBC', Patient_Count: 14, Applied_Rate: 300 },
-    { Date: '2026-05-02', Branch_Code: 'DUS', Department: 'USG', Service_Name: 'USG Whole Abdomen', Patient_Count: 6, Applied_Rate: 1200 },
-    { Date: '2026-05-02', Branch_Code: 'DUS', Department: 'XRAY', Service_Name: 'X-Ray Chest PA', Patient_Count: 8, Applied_Rate: 400 },
-    { Date: '2026-05-02', Branch_Code: 'SDC', Department: 'PHYSIO', Service_Name: 'Physiotherapy Routine Session', Patient_Count: 7, Applied_Rate: 450 },
-    { Date: '2026-05-02', Branch_Code: 'SDC', Department: 'CONSULTATION', Service_Name: 'Nephrologist Consultation', Patient_Count: 10, Applied_Rate: 1000 },
+  // Tab 2: RateCard_Consultation (rate card, consultation revenue in another sheet)
+  const rateCardConsultationData = catalog.map((c) => {
+    const ov = overrides.find((o) => o.serviceId === c.id);
+    return {
+      Department: c.department,
+      Service_Name: c.name,
+      Sub_Category: c.subCategory || '',
+      Default_Rate: c.defaultRate,
+      Payout_Model: c.payoutModel,
+      Doctor_Rev_Share_Pct: c.defaultRevSharePct,
+      Doctor_Fixed_Monthly_Fee: c.defaultFixedMonthlyFee,
+      Branch_Code: ov ? branchCodeMap.get(ov.branchId) || '' : '',
+      Branch_Override_Rate: ov?.overrideRate ?? '',
+      Consultation_Fee: c.department === 'CONSULTATION' ? c.defaultRate : '',
+    };
+  });
+  const wsRateCard = XLSX.utils.json_to_sheet(rateCardConsultationData);
+  setColWidths(wsRateCard, rateCardConsultationData);
+  XLSX.utils.book_append_sheet(wb, wsRateCard, 'RateCard_Consultation');
+
+  // Tab 3: Costs_Per_Lab (Costs per lab in another sheet)
+  const sampleCostsPerLab = [
+    { Year_Month: '2026-05', Branch_Code: 'DUS', Lab_Department: 'BLOOD_TEST', Rent: 28000, Electricity: 8000, Staffing: 40000, Consumables: 20000, Licensing: 3000, Other: 3000, Fixed_Opex_Total: 102000 },
+    { Year_Month: '2026-05', Branch_Code: 'DUS', Lab_Department: 'USG', Rent: 19600, Electricity: 5600, Staffing: 28000, Consumables: 14000, Licensing: 2100, Other: 2100, Fixed_Opex_Total: 71400 },
+    { Year_Month: '2026-05', Branch_Code: 'DUS', Lab_Department: 'XRAY', Rent: 16800, Electricity: 4800, Staffing: 24000, Consumables: 12000, Licensing: 1800, Other: 1800, Fixed_Opex_Total: 61200 },
+    { Year_Month: '2026-05', Branch_Code: 'DUS', Lab_Department: 'DIALYSIS', Rent: 44800, Electricity: 12800, Staffing: 64000, Consumables: 32000, Licensing: 4800, Other: 4800, Fixed_Opex_Total: 163200 },
+    { Year_Month: '2026-05', Branch_Code: 'DUS', Lab_Department: 'PHYSIO', Rent: 14000, Electricity: 4000, Staffing: 20000, Consumables: 10000, Licensing: 1500, Other: 1500, Fixed_Opex_Total: 51000 },
+    { Year_Month: '2026-05', Branch_Code: 'DUS', Lab_Department: 'CONSULTATION', Rent: 16800, Electricity: 4800, Staffing: 24000, Consumables: 12000, Licensing: 1800, Other: 1800, Fixed_Opex_Total: 61200 },
+    { Year_Month: '2026-05', Branch_Code: 'SDC', Lab_Department: 'BLOOD_TEST', Rent: 25000, Electricity: 7500, Staffing: 35000, Consumables: 18000, Licensing: 2500, Other: 2500, Fixed_Opex_Total: 90500 },
+    { Year_Month: '2026-05', Branch_Code: 'SDC', Lab_Department: 'USG', Rent: 17500, Electricity: 5000, Staffing: 25000, Consumables: 12500, Licensing: 2000, Other: 2000, Fixed_Opex_Total: 64000 },
   ];
-  const wsDaily = XLSX.utils.json_to_sheet(sampleDaily);
-  setColWidths(wsDaily, sampleDaily);
-  XLSX.utils.book_append_sheet(wb, wsDaily, 'Daily_Dept_Revenue');
-
-  // Tab 3: Department_Costs
-  const sampleDeptCosts = [
-    { Year_Month: '2026-05', Branch_Code: 'DUS', Department: 'DIALYSIS', Rent: 44800, Electricity: 12800, Staffing: 64000, Consumables: 32000, Licensing: 4800, Other: 4800 },
-    { Year_Month: '2026-05', Branch_Code: 'DUS', Department: 'BLOOD_TEST', Rent: 28000, Electricity: 8000, Staffing: 40000, Consumables: 20000, Licensing: 3000, Other: 3000 },
-    { Year_Month: '2026-05', Branch_Code: 'DUS', Department: 'USG', Rent: 19600, Electricity: 5600, Staffing: 28000, Consumables: 14000, Licensing: 2100, Other: 2100 },
-    { Year_Month: '2026-05', Branch_Code: 'DUS', Department: 'XRAY', Rent: 16800, Electricity: 4800, Staffing: 24000, Consumables: 12000, Licensing: 1800, Other: 1800 },
-    { Year_Month: '2026-05', Branch_Code: 'DUS', Department: 'PHYSIO', Rent: 14000, Electricity: 4000, Staffing: 20000, Consumables: 10000, Licensing: 1500, Other: 1500 },
-    { Year_Month: '2026-05', Branch_Code: 'DUS', Department: 'CONSULTATION', Rent: 16800, Electricity: 4800, Staffing: 24000, Consumables: 12000, Licensing: 1800, Other: 1800 },
-  ];
-  const wsDeptCosts = XLSX.utils.json_to_sheet(sampleDeptCosts);
-  setColWidths(wsDeptCosts, sampleDeptCosts);
-  XLSX.utils.book_append_sheet(wb, wsDeptCosts, 'Department_Costs');
-
-  // Tab 4: Occupied_Dialysis_Slots
-  const sampleDialysis = [
-    { Date: '2026-05-02', Branch_Code: 'DUS', Machine_Index: 1, Shift_Index: 1, Slot_Type: 'STANDARD', Applied_Rate: 1800 },
-    { Date: '2026-05-02', Branch_Code: 'DUS', Machine_Index: 1, Shift_Index: 2, Slot_Type: 'STANDARD', Applied_Rate: 1800 },
-    { Date: '2026-05-02', Branch_Code: 'DUS', Machine_Index: 2, Shift_Index: 1, Slot_Type: 'SINGLE_USE', Applied_Rate: 2200 },
-    { Date: '2026-05-02', Branch_Code: 'SDC', Machine_Index: 1, Shift_Index: 1, Slot_Type: 'STANDARD', Applied_Rate: 1800 },
-  ];
-  const wsDialysis = XLSX.utils.json_to_sheet(sampleDialysis);
-  setColWidths(wsDialysis, sampleDialysis);
-  XLSX.utils.book_append_sheet(wb, wsDialysis, 'Occupied_Dialysis_Slots');
-
-  // Tab 5: RateCard_Master (Pre-filled from DB)
-  const masterCatalogData = catalog.map((c) => ({
-    Department: c.department,
-    Service_Name: c.name,
-    Sub_Category: c.subCategory || '',
-    Default_Rate: c.defaultRate,
-    Payout_Model: c.payoutModel,
-    Rev_Share_Pct: c.defaultRevSharePct,
-    Fixed_Monthly_Fee: c.defaultFixedMonthlyFee,
-  }));
-  const wsMaster = XLSX.utils.json_to_sheet(masterCatalogData);
-  setColWidths(wsMaster, masterCatalogData);
-  XLSX.utils.book_append_sheet(wb, wsMaster, 'RateCard_Master');
+  const wsCosts = XLSX.utils.json_to_sheet(sampleCostsPerLab);
+  setColWidths(wsCosts, sampleCostsPerLab);
+  XLSX.utils.book_append_sheet(wb, wsCosts, 'Costs_Per_Lab');
 
   XLSX.writeFile(wb, 'Clinic_Data_Import_Template.xlsx');
 }
 
-// 2. EXPORT FULL 8-TAB COMPREHENSIVE WORKBOOK
+// ----------------------------------------------------------------------
+// 2. EXPORT MASTER COMPREHENSIVE WORKBOOK (.XLSX)
+// Includes the 3 core sheets + Daily revenue and Branches
+// ----------------------------------------------------------------------
 export async function exportFullExcelWorkbook(): Promise<void> {
   const [
     branches,
@@ -132,7 +122,7 @@ export async function exportFullExcelWorkbook(): Promise<void> {
 
   const branchCodeMap = new Map(branches.map((b) => [b.id, b.code]));
 
-  // Calculate comprehensive department profitability for active period
+  // Calculate comprehensive department profitability
   const profitability = computeDepartmentProfitability(
     { branchId: 'ALL', startDate: '2026-04-01', endDate: '2026-09-30', department: 'ALL' },
     branches,
@@ -147,55 +137,48 @@ export async function exportFullExcelWorkbook(): Promise<void> {
 
   const wb = XLSX.utils.book_new();
 
-  // Tab 1: Branches
-  const branchesData = branches.map((b) => ({
-    Branch_Id: b.id,
-    Branch_Code: b.code,
-    Branch_Name: b.name,
-    Location: b.location,
-    Sunday_Open: b.sundayOpen ? 'YES' : 'NO',
-    Is_Active: b.isActive ? 'YES' : 'NO',
-  }));
-  const wsBranches = XLSX.utils.json_to_sheet(branchesData);
-  setColWidths(wsBranches, branchesData);
-  XLSX.utils.book_append_sheet(wb, wsBranches, 'Branches');
+  // Sheet 1: Dialysis_Slots (Occupied Dialysis Slots)
+  const dialysisData = slots
+    .filter((s) => s.isOccupied)
+    .map((s) => ({
+      Date: s.date,
+      Branch_Code: branchCodeMap.get(s.branchId) || s.branchId,
+      Machine_Index: s.machineIndex,
+      Shift_Index: s.slotIndex,
+      Slot_Type: s.slotType,
+      Applied_Rate: s.appliedRate,
+      Patient_Status: 'Occupied',
+    }));
+  const wsDialysis = XLSX.utils.json_to_sheet(dialysisData);
+  setColWidths(wsDialysis, dialysisData);
+  XLSX.utils.book_append_sheet(wb, wsDialysis, 'Dialysis_Slots');
 
-  // Tab 2: RateCard_Master
-  const catalogData = catalog.map((c) => ({
-    Department: c.department,
-    Service_Name: c.name,
-    Sub_Category: c.subCategory || '',
-    Default_Rate: c.defaultRate,
-    Payout_Model: c.payoutModel,
-    Rev_Share_Pct: c.defaultRevSharePct,
-    Fixed_Monthly_Fee: c.defaultFixedMonthlyFee,
-    Is_Active: c.isActive ? 'YES' : 'NO',
-  }));
-  const wsCatalog = XLSX.utils.json_to_sheet(catalogData);
-  setColWidths(wsCatalog, catalogData);
-  XLSX.utils.book_append_sheet(wb, wsCatalog, 'RateCard_Master');
-
-  // Tab 3: Branch_Overrides
-  const overridesData = overrides.map((o) => {
-    const srv = catalog.find((c) => c.id === o.serviceId);
+  // Sheet 2: RateCard_Consultation (Rate Card, Consultation Revenue & Doctor Payouts)
+  const rateCardData = catalog.map((c) => {
+    const ov = overrides.find((o) => o.serviceId === c.id);
     return {
-      Branch_Code: branchCodeMap.get(o.branchId) || o.branchId,
-      Service_Name: srv?.name || o.serviceId,
-      Override_Rate: o.overrideRate,
-      Override_Payout_Model: o.overridePayoutModel || srv?.payoutModel,
-      Override_Rev_Share_Pct: o.overrideRevSharePct ?? srv?.defaultRevSharePct,
-      Override_Fixed_Monthly_Fee: o.overrideFixedMonthlyFee ?? srv?.defaultFixedMonthlyFee,
+      Department: c.department,
+      Service_Name: c.name,
+      Sub_Category: c.subCategory || '',
+      Default_Rate: c.defaultRate,
+      Payout_Model: c.payoutModel,
+      Doctor_Rev_Share_Pct: c.defaultRevSharePct,
+      Doctor_Fixed_Monthly_Fee: c.defaultFixedMonthlyFee,
+      Branch_Code: ov ? branchCodeMap.get(ov.branchId) || '' : '',
+      Branch_Override_Rate: ov?.overrideRate ?? '',
+      Consultation_Fee: c.department === 'CONSULTATION' ? c.defaultRate : '',
+      Is_Active: c.isActive ? 'YES' : 'NO',
     };
   });
-  const wsOverrides = XLSX.utils.json_to_sheet(overridesData);
-  setColWidths(wsOverrides, overridesData);
-  XLSX.utils.book_append_sheet(wb, wsOverrides, 'Branch_Overrides');
+  const wsRateCard = XLSX.utils.json_to_sheet(rateCardData);
+  setColWidths(wsRateCard, rateCardData);
+  XLSX.utils.book_append_sheet(wb, wsRateCard, 'RateCard_Consultation');
 
-  // Tab 4: Department_Costs
-  const deptCostsData = departmentCosts.map((dc) => ({
+  // Sheet 3: Costs_Per_Lab (Department & Lab OPEX Costs)
+  const costsPerLabData = departmentCosts.map((dc) => ({
     Year_Month: dc.yearMonth,
     Branch_Code: branchCodeMap.get(dc.branchId) || dc.branchId,
-    Department: dc.department,
+    Lab_Department: dc.department,
     Rent: dc.rent,
     Electricity: dc.electricity,
     Staffing: dc.staffing,
@@ -204,44 +187,11 @@ export async function exportFullExcelWorkbook(): Promise<void> {
     Other: dc.other,
     Fixed_Opex_Total: dc.fixedOpeXTotal,
   }));
-  const wsDeptCosts = XLSX.utils.json_to_sheet(deptCostsData);
-  setColWidths(wsDeptCosts, deptCostsData);
-  XLSX.utils.book_append_sheet(wb, wsDeptCosts, 'Department_Costs');
+  const wsCosts = XLSX.utils.json_to_sheet(costsPerLabData);
+  setColWidths(wsCosts, costsPerLabData);
+  XLSX.utils.book_append_sheet(wb, wsCosts, 'Costs_Per_Lab');
 
-  // Tab 5: Monthly_Costs
-  const monthlyCostsData = monthlyCosts.map((mc) => ({
-    Year_Month: mc.yearMonth,
-    Branch_Code: branchCodeMap.get(mc.branchId) || mc.branchId,
-    Rent: mc.rent,
-    Electricity: mc.electricity,
-    Staffing: mc.staffing,
-    Consumables: mc.consumables,
-    Licensing: mc.licensing,
-    Other: mc.other,
-    Fixed_Opex_Total: mc.fixedOpeXTotal,
-  }));
-  const wsMonthlyCosts = XLSX.utils.json_to_sheet(monthlyCostsData);
-  setColWidths(wsMonthlyCosts, monthlyCostsData);
-  XLSX.utils.book_append_sheet(wb, wsMonthlyCosts, 'Monthly_Costs');
-
-  // Tab 6: Department_Profitability
-  const profData = profitability.map((p) => ({
-    Department: p.name,
-    Patient_Footfall: p.footfall,
-    Gross_Revenue: p.revenue,
-    Revenue_Share_Pct: `${p.revContributionPct.toFixed(1)}%`,
-    Pro_Rated_OPEX: p.proRatedOpex.total,
-    Doctor_Payouts: p.doctorPayouts.total,
-    Total_Cost: p.totalCost,
-    Net_Operating_Profit: p.netProfit,
-    Net_Margin_Pct: `${p.marginPct.toFixed(1)}%`,
-    Profit_Contribution_Pct: `${p.profitContributionPct.toFixed(1)}%`,
-  }));
-  const wsProf = XLSX.utils.json_to_sheet(profData);
-  setColWidths(wsProf, profData);
-  XLSX.utils.book_append_sheet(wb, wsProf, 'Department_Profitability');
-
-  // Tab 7: Daily_Dept_Revenue
+  // Sheet 4: Daily_Dept_Revenue
   const dailyData = entries.map((e) => {
     const srv = catalog.find((c) => c.id === e.serviceId);
     return {
@@ -259,8 +209,53 @@ export async function exportFullExcelWorkbook(): Promise<void> {
   setColWidths(wsDaily, dailyData);
   XLSX.utils.book_append_sheet(wb, wsDaily, 'Daily_Dept_Revenue');
 
-  // Tab 8: Occupied_Dialysis_Slots
-  const dialysisData = slots
+  // Sheet 5: Branches
+  const branchesData = branches.map((b) => ({
+    Branch_Id: b.id,
+    Branch_Code: b.code,
+    Branch_Name: b.name,
+    Location: b.location,
+    Sunday_Open: b.sundayOpen ? 'YES' : 'NO',
+    Is_Active: b.isActive ? 'YES' : 'NO',
+  }));
+  const wsBranches = XLSX.utils.json_to_sheet(branchesData);
+  setColWidths(wsBranches, branchesData);
+  XLSX.utils.book_append_sheet(wb, wsBranches, 'Branches');
+
+  // Sheet 6: Department_Profitability
+  const profData = profitability.map((p) => ({
+    Department: p.name,
+    Patient_Footfall: p.footfall,
+    Gross_Revenue: p.revenue,
+    Revenue_Share_Pct: `${p.revContributionPct.toFixed(1)}%`,
+    Pro_Rated_OPEX: p.proRatedOpex.total,
+    Doctor_Payouts: p.doctorPayouts.total,
+    Total_Cost: p.totalCost,
+    Net_Operating_Profit: p.netProfit,
+    Net_Margin_Pct: `${p.marginPct.toFixed(1)}%`,
+    Profit_Contribution_Pct: `${p.profitContributionPct.toFixed(1)}%`,
+  }));
+  const wsProf = XLSX.utils.json_to_sheet(profData);
+  setColWidths(wsProf, profData);
+  XLSX.utils.book_append_sheet(wb, wsProf, 'Department_Profitability');
+
+  const exportDate = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `Clinic_Master_Workbook_${exportDate}.xlsx`);
+}
+
+// ----------------------------------------------------------------------
+// 3. CSV EXPORTERS (ONE CSV PER DATASET)
+// ----------------------------------------------------------------------
+
+// 3.1 Dialysis Slots CSV
+export async function exportDialysisSlotsCsv(): Promise<void> {
+  const [slots, branches] = await Promise.all([
+    db.dialysisSlots.toArray(),
+    db.branches.toArray(),
+  ]);
+  const branchCodeMap = new Map(branches.map((b) => [b.id, b.code]));
+
+  const data = slots
     .filter((s) => s.isOccupied)
     .map((s) => ({
       Date: s.date,
@@ -269,16 +264,71 @@ export async function exportFullExcelWorkbook(): Promise<void> {
       Shift_Index: s.slotIndex,
       Slot_Type: s.slotType,
       Applied_Rate: s.appliedRate,
+      Patient_Status: 'Occupied',
     }));
-  const wsDialysis = XLSX.utils.json_to_sheet(dialysisData);
-  setColWidths(wsDialysis, dialysisData);
-  XLSX.utils.book_append_sheet(wb, wsDialysis, 'Occupied_Dialysis_Slots');
 
-  const exportDate = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(wb, `Clinic_Master_Workbook_${exportDate}.xlsx`);
+  const ws = XLSX.utils.json_to_sheet(data);
+  const csv = XLSX.utils.sheet_to_csv(ws);
+  downloadCsvBlob(csv, `dialysis-slots-${new Date().toISOString().slice(0, 10)}.csv`);
 }
 
-// 3. EXPORT DAILY REVENUE CSV
+// 3.2 Rate Card & Consultation Revenue CSV
+export async function exportRateCardConsultationCsv(): Promise<void> {
+  const [catalog, overrides, branches] = await Promise.all([
+    db.serviceCatalog.toArray(),
+    db.rateOverrides.toArray(),
+    db.branches.toArray(),
+  ]);
+  const branchCodeMap = new Map(branches.map((b) => [b.id, b.code]));
+
+  const data = catalog.map((c) => {
+    const ov = overrides.find((o) => o.serviceId === c.id);
+    return {
+      Department: c.department,
+      Service_Name: c.name,
+      Sub_Category: c.subCategory || '',
+      Default_Rate: c.defaultRate,
+      Payout_Model: c.payoutModel,
+      Doctor_Rev_Share_Pct: c.defaultRevSharePct,
+      Doctor_Fixed_Monthly_Fee: c.defaultFixedMonthlyFee,
+      Branch_Code: ov ? branchCodeMap.get(ov.branchId) || '' : '',
+      Branch_Override_Rate: ov?.overrideRate ?? '',
+      Consultation_Fee: c.department === 'CONSULTATION' ? c.defaultRate : '',
+    };
+  });
+
+  const ws = XLSX.utils.json_to_sheet(data);
+  const csv = XLSX.utils.sheet_to_csv(ws);
+  downloadCsvBlob(csv, `ratecard-consultation-${new Date().toISOString().slice(0, 10)}.csv`);
+}
+
+// 3.3 Costs Per Lab CSV
+export async function exportCostsPerLabCsv(): Promise<void> {
+  const [departmentCosts, branches] = await Promise.all([
+    db.departmentCosts.toArray(),
+    db.branches.toArray(),
+  ]);
+  const branchCodeMap = new Map(branches.map((b) => [b.id, b.code]));
+
+  const data = departmentCosts.map((dc) => ({
+    Year_Month: dc.yearMonth,
+    Branch_Code: branchCodeMap.get(dc.branchId) || dc.branchId,
+    Lab_Department: dc.department,
+    Rent: dc.rent,
+    Electricity: dc.electricity,
+    Staffing: dc.staffing,
+    Consumables: dc.consumables,
+    Licensing: dc.licensing,
+    Other: dc.other,
+    Fixed_Opex_Total: dc.fixedOpeXTotal,
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(data);
+  const csv = XLSX.utils.sheet_to_csv(ws);
+  downloadCsvBlob(csv, `costs-per-lab-${new Date().toISOString().slice(0, 10)}.csv`);
+}
+
+// 3.4 Daily Department Entries CSV
 export async function exportDailyEntriesCsv(): Promise<void> {
   const [entries, branches, catalog] = await Promise.all([
     db.dailyEntries.toArray(),
@@ -303,23 +353,5 @@ export async function exportDailyEntriesCsv(): Promise<void> {
 
   const ws = XLSX.utils.json_to_sheet(csvData);
   const csv = XLSX.utils.sheet_to_csv(ws);
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `daily-revenue-${new Date().toISOString().slice(0, 10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-// 4. JSON FULL BACKUP SNAPSHOT
-export async function triggerJsonBackupDownload(): Promise<void> {
-  const json = await db.exportToJsonBackup();
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `clinic-state-backup-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadCsvBlob(csv, `daily-revenue-${new Date().toISOString().slice(0, 10)}.csv`);
 }

@@ -572,7 +572,7 @@ export const Financials: React.FC = () => {
 
             <input
               type="file"
-              accept=".xlsx,.xls"
+              accept=".xlsx,.xls,.csv,text/csv"
               ref={excelFileInputRef}
               onChange={async (e) => {
                 const file = e.target.files?.[0];

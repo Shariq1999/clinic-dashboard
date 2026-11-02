@@ -34,7 +34,7 @@ export interface ImportResultSummary {
 }
 
 // Date normalization helper
-function normalizeDateStr(val: any): string | null {
+export function normalizeDateStr(val: any): string | null {
   if (!val) return null;
   if (val instanceof Date) {
     return isValid(val) ? format(val, 'yyyy-MM-dd') : null;
@@ -46,12 +46,10 @@ function normalizeDateStr(val: any): string | null {
   }
   if (typeof val === 'string') {
     const trimmed = val.trim();
-    // Test direct ISO
     const parsed = parseISO(trimmed);
     if (isValid(parsed) && /^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
       return trimmed.slice(0, 10);
     }
-    // Test DD-MM-YYYY or DD/MM/YYYY
     const dmyMatch = trimmed.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
     if (dmyMatch) {
       const [, d, m, y] = dmyMatch;
@@ -62,7 +60,7 @@ function normalizeDateStr(val: any): string | null {
 }
 
 // Year-Month normalization helper
-function normalizeYmStr(val: any): string | null {
+export function normalizeYmStr(val: any): string | null {
   if (!val) return null;
   const dStr = normalizeDateStr(val);
   if (dStr) return dStr.slice(0, 7);
@@ -74,37 +72,14 @@ function normalizeYmStr(val: any): string | null {
   return null;
 }
 
-export async function importExcelWorkbook(
-  file: File,
+// Core processor for parsed sheet tables (Used by both XLSX/CSV file upload and Google Sheets sync)
+export async function importParsedSpreadsheetData(
+  sheetsData: Record<string, any[]>,
   mode: 'MERGE' | 'OVERWRITE' = 'MERGE'
 ): Promise<ImportResultSummary> {
   const warnings: string[] = [];
   const errors: string[] = [];
   let skippedSundaysCount = 0;
-
-  const arrayBuffer = await file.arrayBuffer();
-  let workbook: XLSX.WorkBook;
-  try {
-    workbook = XLSX.read(arrayBuffer, { cellDates: true, cellNF: false, cellText: false });
-  } catch (err: any) {
-    return {
-      success: false,
-      mode,
-      importedAt: new Date().toISOString(),
-      auditCounts: {
-        branches: 0,
-        serviceCatalog: 0,
-        rateOverrides: 0,
-        departmentCosts: 0,
-        monthlyCosts: 0,
-        dailyEntries: 0,
-        dialysisSlots: 0,
-      },
-      skippedSundaysCount: 0,
-      warnings: [],
-      errors: [`Failed to parse Excel file: ${err.message || 'Corrupted or unsupported format'}`],
-    };
-  }
 
   // Load existing baseline data for reconciliation
   const existingBranches = await db.branches.toArray();
@@ -112,20 +87,19 @@ export async function importExcelWorkbook(
   const existingOverrides = await db.rateOverrides.toArray();
 
   // Create fast lookup maps
-  const branchMap = new Map<string, Branch>(); // by code or id (lowercased)
+  const branchMap = new Map<string, Branch>();
   existingBranches.forEach((b) => {
     branchMap.set(b.id.toLowerCase(), b);
     branchMap.set(b.code.toLowerCase(), b);
     branchMap.set(b.name.toLowerCase(), b);
   });
 
-  const catalogMap = new Map<string, ServiceCatalogItem>(); // by name or id (lowercased)
+  const catalogMap = new Map<string, ServiceCatalogItem>();
   existingCatalog.forEach((c) => {
     catalogMap.set(c.id.toLowerCase(), c);
     catalogMap.set(c.name.toLowerCase(), c);
   });
 
-  // Prepared data arrays
   const newBranches: Branch[] = [];
   const newCatalog: ServiceCatalogItem[] = [];
   const newOverrides: BranchRateOverride[] = [];
@@ -133,7 +107,6 @@ export async function importExcelWorkbook(
   const newDailyEntries: DailyDepartmentEntry[] = [];
   const newDialysisSlots: DialysisSlotRecord[] = [];
 
-  // Helper to resolve branch
   const resolveBranch = (rawCode: any): Branch => {
     if (!rawCode) {
       return existingBranches[0] || {
@@ -149,7 +122,6 @@ export async function importExcelWorkbook(
     const found = branchMap.get(str);
     if (found) return found;
 
-    // Auto-create branch if unknown code encountered in Excel
     const cleanCode = String(rawCode).trim().toUpperCase();
     const newBr: Branch = {
       id: `br_${cleanCode.toLowerCase().replace(/[^a-z0-9]/g, '_')}`,
@@ -163,17 +135,15 @@ export async function importExcelWorkbook(
     branchMap.set(newBr.id.toLowerCase(), newBr);
     branchMap.set(newBr.code.toLowerCase(), newBr);
     branchMap.set(newBr.name.toLowerCase(), newBr);
-    warnings.push(`Auto-registered branch code "${cleanCode}" encountered in spreadsheet.`);
+    warnings.push(`Auto-registered branch code "${cleanCode}" encountered.`);
     return newBr;
   };
 
-  // Helper to resolve service
   const resolveService = (rawName: any, dept: DepartmentId): ServiceCatalogItem => {
     const str = String(rawName || '').trim().toLowerCase();
     const found = catalogMap.get(str);
     if (found) return found;
 
-    // Auto-create service item if unknown in catalog
     const cleanName = String(rawName || 'General Service').trim();
     const newSrv: ServiceCatalogItem = {
       id: `srv_imp_${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 24)}`,
@@ -193,100 +163,110 @@ export async function importExcelWorkbook(
   };
 
   // ----------------------------------------------------
-  // 1. PARSE RateCard_Master (if present)
+  // 1. PARSE RateCard_Consultation (Rate Card, Consultation Revenue & Doctor Payouts)
   // ----------------------------------------------------
-  const sheetMaster = workbook.Sheets['RateCard_Master'];
-  if (sheetMaster) {
-    const rows: any[] = XLSX.utils.sheet_to_json(sheetMaster);
-    rows.forEach((r) => {
-      const name = String(r.Service_Name || r.name || '').trim();
-      if (!name) return;
-      const dept: DepartmentId = (r.Department || r.department || 'BLOOD_TEST').toUpperCase();
-      const existing = catalogMap.get(name.toLowerCase());
-      const srvRecord: ServiceCatalogItem = {
-        id: existing?.id || `srv_imp_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 24)}`,
-        name,
-        department: dept,
-        subCategory: r.Sub_Category || r.subCategory || existing?.subCategory,
-        defaultRate: Number(r.Default_Rate ?? r.defaultRate ?? 500),
-        payoutModel: (r.Payout_Model || r.payoutModel || 'NONE').toUpperCase() as DoctorPayoutModel,
-        defaultRevSharePct: Number(r.Rev_Share_Pct ?? r.defaultRevSharePct ?? 0),
-        defaultFixedMonthlyFee: Number(r.Fixed_Monthly_Fee ?? r.defaultFixedMonthlyFee ?? 0),
-        isActive: true,
-      };
-      newCatalog.push(srvRecord);
-      catalogMap.set(srvRecord.id.toLowerCase(), srvRecord);
-      catalogMap.set(srvRecord.name.toLowerCase(), srvRecord);
-    });
-  }
+  const rateCardRows =
+    sheetsData['RateCard_Consultation'] ||
+    sheetsData['RateCard_Master'] ||
+    sheetsData['Rate Card & Consultation'] ||
+    sheetsData['Rate Card'] ||
+    sheetsData['Consultations'] ||
+    [];
 
-  // ----------------------------------------------------
-  // 2. PARSE Branch_Overrides (if present)
-  // ----------------------------------------------------
-  const sheetOverrides = workbook.Sheets['Branch_Overrides'];
-  if (sheetOverrides) {
-    const rows: any[] = XLSX.utils.sheet_to_json(sheetOverrides);
-    rows.forEach((r) => {
+  rateCardRows.forEach((r) => {
+    const name = String(r.Service_Name || r.serviceName || r.name || '').trim();
+    if (!name) return;
+    const dept: DepartmentId = String(r.Department || r.department || 'BLOOD_TEST').toUpperCase() as DepartmentId;
+    const existing = catalogMap.get(name.toLowerCase());
+
+    const defaultRate = Number(
+      r.Default_Rate ?? r.defaultRate ?? r.Consultation_Fee ?? r.rate ?? 500
+    );
+    const payoutModel = (
+      r.Payout_Model ||
+      r.payoutModel ||
+      (dept === 'CONSULTATION' ? 'REVENUE_SHARE' : 'NONE')
+    ).toUpperCase() as DoctorPayoutModel;
+
+    const srvRecord: ServiceCatalogItem = {
+      id: existing?.id || `srv_imp_${name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 24)}`,
+      name,
+      department: dept,
+      subCategory: r.Sub_Category || r.subCategory || existing?.subCategory,
+      defaultRate,
+      payoutModel,
+      defaultRevSharePct: Number(r.Doctor_Rev_Share_Pct ?? r.Rev_Share_Pct ?? r.defaultRevSharePct ?? 0),
+      defaultFixedMonthlyFee: Number(r.Doctor_Fixed_Monthly_Fee ?? r.Fixed_Monthly_Fee ?? r.defaultFixedMonthlyFee ?? 0),
+      isActive: true,
+    };
+    newCatalog.push(srvRecord);
+    catalogMap.set(srvRecord.id.toLowerCase(), srvRecord);
+    catalogMap.set(srvRecord.name.toLowerCase(), srvRecord);
+
+    // If row includes branch override details
+    if (r.Branch_Code || r.branchId) {
       const br = resolveBranch(r.Branch_Code || r.branchId);
-      const srvName = String(r.Service_Name || r.serviceId || '').trim();
-      const srv = catalogMap.get(srvName.toLowerCase());
-      if (!srv) return;
-
-      newOverrides.push({
-        id: `${br.id}_${srv.id}`,
-        branchId: br.id,
-        serviceId: srv.id,
-        overrideRate: r.Override_Rate !== undefined ? Number(r.Override_Rate) : undefined,
-        overridePayoutModel: r.Override_Payout_Model ? (String(r.Override_Payout_Model).toUpperCase() as DoctorPayoutModel) : undefined,
-        overrideRevSharePct: r.Override_Rev_Share_Pct !== undefined ? Number(r.Override_Rev_Share_Pct) : undefined,
-        overrideFixedMonthlyFee: r.Override_Fixed_Monthly_Fee !== undefined ? Number(r.Override_Fixed_Monthly_Fee) : undefined,
-      });
-    });
-  }
-
-  // ----------------------------------------------------
-  // 3. PARSE Department_Costs
-  // ----------------------------------------------------
-  const sheetDeptCosts =
-    workbook.Sheets['Department_Costs'] ||
-    workbook.Sheets['DepartmentCosts'] ||
-    workbook.Sheets['Dept_Costs'];
-  if (sheetDeptCosts) {
-    const rows: any[] = XLSX.utils.sheet_to_json(sheetDeptCosts);
-    rows.forEach((r, idx) => {
-      const ym = normalizeYmStr(r.Year_Month || r.yearMonth || r.Month);
-      if (!ym) {
-        warnings.push(`Department_Costs row #${idx + 2} has invalid or missing Year_Month format.`);
-        return;
+      const overrideRate = r.Branch_Override_Rate ?? r.overrideRate;
+      if (overrideRate !== undefined && overrideRate !== '') {
+        newOverrides.push({
+          id: `${br.id}_${srvRecord.id}`,
+          branchId: br.id,
+          serviceId: srvRecord.id,
+          overrideRate: Number(overrideRate),
+          overridePayoutModel: payoutModel,
+          overrideRevSharePct: srvRecord.defaultRevSharePct,
+          overrideFixedMonthlyFee: srvRecord.defaultFixedMonthlyFee,
+        });
       }
-      const br = resolveBranch(r.Branch_Code || r.branchId);
-      const dept: DepartmentId = String(r.Department || r.department || 'DIALYSIS').toUpperCase() as DepartmentId;
+    }
+  });
 
-      const rent = Number(r.Rent ?? r.rent ?? 0);
-      const electricity = Number(r.Electricity ?? r.electricity ?? 0);
-      const staffing = Number(r.Staffing ?? r.staffing ?? 0);
-      const consumables = Number(r.Consumables ?? r.consumables ?? 0);
-      const licensing = Number(r.Licensing ?? r.licensing ?? 0);
-      const other = Number(r.Other ?? r.other ?? 0);
-      const fixedOpeXTotal = rent + electricity + staffing + consumables + licensing + other;
+  // ----------------------------------------------------
+  // 2. PARSE Costs_Per_Lab (Department and Lab Costs)
+  // ----------------------------------------------------
+  const costRows =
+    sheetsData['Costs_Per_Lab'] ||
+    sheetsData['Costs per Lab'] ||
+    sheetsData['Department_Costs'] ||
+    sheetsData['Dept_Costs'] ||
+    sheetsData['Lab_Costs'] ||
+    [];
 
-      newDeptCosts.push({
-        id: `${br.id}_${ym}_${dept}`,
-        branchId: br.id,
-        yearMonth: ym,
-        department: dept,
-        rent,
-        electricity,
-        staffing,
-        consumables,
-        licensing,
-        other,
-        fixedOpeXTotal,
-      });
+  costRows.forEach((r, idx) => {
+    const ym = normalizeYmStr(r.Year_Month || r.yearMonth || r.Month);
+    if (!ym) {
+      warnings.push(`Costs_Per_Lab row #${idx + 2} has invalid or missing Year_Month.`);
+      return;
+    }
+    const br = resolveBranch(r.Branch_Code || r.branchId);
+    const dept: DepartmentId = String(
+      r.Lab_Department || r.department || r.Department || 'BLOOD_TEST'
+    ).toUpperCase() as DepartmentId;
+
+    const rent = Number(r.Rent ?? r.rent ?? 0);
+    const electricity = Number(r.Electricity ?? r.electricity ?? 0);
+    const staffing = Number(r.Staffing ?? r.staffing ?? 0);
+    const consumables = Number(r.Consumables ?? r.consumables ?? 0);
+    const licensing = Number(r.Licensing ?? r.licensing ?? 0);
+    const other = Number(r.Other ?? r.other ?? 0);
+    const fixedOpeXTotal = rent + electricity + staffing + consumables + licensing + other;
+
+    newDeptCosts.push({
+      id: `${br.id}_${ym}_${dept}`,
+      branchId: br.id,
+      yearMonth: ym,
+      department: dept,
+      rent,
+      electricity,
+      staffing,
+      consumables,
+      licensing,
+      other,
+      fixedOpeXTotal,
     });
-  }
+  });
 
-  // Auto-aggregate Department_Costs into Monthly_Costs
+  // Auto-aggregate Department Costs into Monthly Costs
   const monthlyCostsMap = new Map<string, MonthlyCostRecord>();
   newDeptCosts.forEach((dc) => {
     const key = `${dc.branchId}_${dc.yearMonth}`;
@@ -302,7 +282,6 @@ export async function importExcelWorkbook(
       other: 0,
       fixedOpeXTotal: 0,
     };
-
     existing.rent += dc.rent;
     existing.electricity += dc.electricity;
     existing.staffing += dc.staffing;
@@ -310,115 +289,114 @@ export async function importExcelWorkbook(
     existing.licensing += dc.licensing;
     existing.other += dc.other;
     existing.fixedOpeXTotal += dc.fixedOpeXTotal;
-
     monthlyCostsMap.set(key, existing);
   });
   const newMonthlyCosts = Array.from(monthlyCostsMap.values());
 
   // ----------------------------------------------------
-  // 4. PARSE Daily_Dept_Revenue / Daily_Entries
+  // 3. PARSE Dialysis_Slots (Dialysis Slots Occupancy)
   // ----------------------------------------------------
-  const sheetDaily =
-    workbook.Sheets['Daily_Dept_Revenue'] ||
-    workbook.Sheets['Daily_Entries'] ||
-    workbook.Sheets['DailyRevenue'];
-  if (sheetDaily) {
-    const rows: any[] = XLSX.utils.sheet_to_json(sheetDaily);
-    rows.forEach((r, idx) => {
-      const dateStr = normalizeDateStr(r.Date || r.date);
-      if (!dateStr) {
-        warnings.push(`Daily_Dept_Revenue row #${idx + 2} has invalid or missing Date.`);
-        return;
-      }
+  const dialysisRows =
+    sheetsData['Dialysis_Slots'] ||
+    sheetsData['Dialysis Slots'] ||
+    sheetsData['Occupied_Dialysis_Slots'] ||
+    sheetsData['DialysisSlots'] ||
+    [];
 
-      const br = resolveBranch(r.Branch_Code || r.branchId);
-      const dept: DepartmentId = String(r.Department || r.department || 'BLOOD_TEST').toUpperCase() as DepartmentId;
-      if (dept === 'DIALYSIS') return; // Dialysis is handled via slot matrix
+  dialysisRows.forEach((r, idx) => {
+    const dateStr = normalizeDateStr(r.Date || r.date);
+    if (!dateStr) {
+      warnings.push(`Dialysis_Slots row #${idx + 2} has invalid or missing Date.`);
+      return;
+    }
 
-      const srvName = String(r.Service_Name || r.serviceId || 'General Modality').trim();
-      const srv = resolveService(srvName, dept);
+    // STRICT SUNDAY LOCK: Clinical safety policy strictly excludes Sunday dialysis
+    if (getDay(parseISO(dateStr)) === 0) {
+      skippedSundaysCount += 1;
+      return;
+    }
 
-      const patientCount = Math.max(0, parseInt(r.Patient_Count ?? r.patientCount ?? 1, 10));
+    const br = resolveBranch(r.Branch_Code || r.branchId);
+    const machineIndex = Math.max(1, parseInt(r.Machine_Index ?? r.machineIndex ?? 1, 10));
+    const slotIndex = Math.max(1, parseInt(r.Shift_Index ?? r.slotIndex ?? 1, 10));
+    const slotType: DialysisSlotType = String(
+      r.Slot_Type ?? r.slotType ?? 'STANDARD'
+    ).toUpperCase() as DialysisSlotType;
+    const appliedRate = Number(r.Applied_Rate ?? r.appliedRate ?? 1800);
 
-      // Resolve applied rate
-      let rate = Number(r.Applied_Rate ?? r.rate ?? 0);
-      if (rate <= 0) {
-        const ov = newOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id) ||
-                   existingOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id);
-        rate = ov?.overrideRate ?? srv.defaultRate;
-      }
-
-      const revenue = Number(r.Calculated_Revenue ?? r.revenue ?? (patientCount * rate));
-
-      // Resolve doctor remuneration
-      let doctorVariablePayout = Number(r.Doctor_Payout ?? r.doctorVariablePayout ?? 0);
-      if (doctorVariablePayout === 0) {
-        const ov = newOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id) ||
-                   existingOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id);
-        const model = ov?.overridePayoutModel ?? srv.payoutModel;
-        const revSharePct = ov?.overrideRevSharePct ?? srv.defaultRevSharePct;
-        if (model === 'REVENUE_SHARE' || model === 'HYBRID') {
-          doctorVariablePayout = Math.round(revenue * (revSharePct / 100));
-        }
-      }
-
-      newDailyEntries.push({
-        id: `${br.id}_${dateStr}_${srv.id}`,
-        branchId: br.id,
-        date: dateStr,
-        department: dept,
-        serviceId: srv.id,
-        patientCount,
-        rate,
-        revenue,
-        doctorVariablePayout,
-      });
+    newDialysisSlots.push({
+      id: `${br.id}_${dateStr}_M${machineIndex}_S${slotIndex}`,
+      branchId: br.id,
+      date: dateStr,
+      machineIndex,
+      slotIndex,
+      isOccupied: true,
+      slotType,
+      appliedRate,
     });
-  }
+  });
 
   // ----------------------------------------------------
-  // 5. PARSE Occupied_Dialysis_Slots
+  // 4. PARSE Daily_Dept_Revenue (if present)
   // ----------------------------------------------------
-  const sheetDialysis =
-    workbook.Sheets['Occupied_Dialysis_Slots'] ||
-    workbook.Sheets['Dialysis_Slots'] ||
-    workbook.Sheets['DialysisSlots'];
-  if (sheetDialysis) {
-    const rows: any[] = XLSX.utils.sheet_to_json(sheetDialysis);
-    rows.forEach((r, idx) => {
-      const dateStr = normalizeDateStr(r.Date || r.date);
-      if (!dateStr) {
-        warnings.push(`Occupied_Dialysis_Slots row #${idx + 2} has invalid or missing Date.`);
-        return;
+  const dailyRows =
+    sheetsData['Daily_Dept_Revenue'] ||
+    sheetsData['Daily_Entries'] ||
+    sheetsData['DailyRevenue'] ||
+    [];
+
+  dailyRows.forEach((r, idx) => {
+    const dateStr = normalizeDateStr(r.Date || r.date);
+    if (!dateStr) {
+      warnings.push(`Daily_Dept_Revenue row #${idx + 2} has invalid or missing Date.`);
+      return;
+    }
+
+    const br = resolveBranch(r.Branch_Code || r.branchId);
+    const dept: DepartmentId = String(r.Department || r.department || 'BLOOD_TEST').toUpperCase() as DepartmentId;
+    if (dept === 'DIALYSIS') return; // Dialysis managed via slot matrix
+
+    const srvName = String(r.Service_Name || r.serviceId || 'General Modality').trim();
+    const srv = resolveService(srvName, dept);
+    const patientCount = Math.max(0, parseInt(r.Patient_Count ?? r.patientCount ?? 1, 10));
+
+    let rate = Number(r.Applied_Rate ?? r.rate ?? 0);
+    if (rate <= 0) {
+      const ov =
+        newOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id) ||
+        existingOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id);
+      rate = ov?.overrideRate ?? srv.defaultRate;
+    }
+
+    const revenue = Number(r.Calculated_Revenue ?? r.revenue ?? patientCount * rate);
+
+    let doctorVariablePayout = Number(r.Doctor_Payout ?? r.doctorVariablePayout ?? 0);
+    if (doctorVariablePayout === 0) {
+      const ov =
+        newOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id) ||
+        existingOverrides.find((o) => o.branchId === br.id && o.serviceId === srv.id);
+      const model = ov?.overridePayoutModel ?? srv.payoutModel;
+      const revSharePct = ov?.overrideRevSharePct ?? srv.defaultRevSharePct;
+      if (model === 'REVENUE_SHARE' || model === 'HYBRID') {
+        doctorVariablePayout = Math.round(revenue * (revSharePct / 100));
       }
+    }
 
-      // STRICT SUNDAY LOCK: Never import Sunday dialysis sessions
-      if (getDay(parseISO(dateStr)) === 0) {
-        skippedSundaysCount += 1;
-        return;
-      }
-
-      const br = resolveBranch(r.Branch_Code || r.branchId);
-      const machineIndex = Math.max(1, parseInt(r.Machine_Index ?? r.machineIndex ?? 1, 10));
-      const slotIndex = Math.max(1, parseInt(r.Shift_Index ?? r.slotIndex ?? 1, 10));
-      const slotType: DialysisSlotType = String(r.Slot_Type ?? r.slotType ?? 'STANDARD').toUpperCase() as DialysisSlotType;
-      const appliedRate = Number(r.Applied_Rate ?? r.appliedRate ?? 1800);
-
-      newDialysisSlots.push({
-        id: `${br.id}_${dateStr}_M${machineIndex}_S${slotIndex}`,
-        branchId: br.id,
-        date: dateStr,
-        machineIndex,
-        slotIndex,
-        isOccupied: true,
-        slotType,
-        appliedRate,
-      });
+    newDailyEntries.push({
+      id: `${br.id}_${dateStr}_${srv.id}`,
+      branchId: br.id,
+      date: dateStr,
+      department: dept,
+      serviceId: srv.id,
+      patientCount,
+      rate,
+      revenue,
+      doctorVariablePayout,
     });
-  }
+  });
 
   // ----------------------------------------------------
-  // 6. ATOMIC DEXIE TRANSACTION EXECUTION
+  // 5. ATOMIC DEXIE TRANSACTION
   // ----------------------------------------------------
   try {
     await db.transaction(
@@ -497,3 +475,154 @@ export async function importExcelWorkbook(
     };
   }
 }
+
+// ----------------------------------------------------------------------
+// IMPORT SPREADSHEET FILE (.XLSX OR .CSV ONLY - STRICTLY NO JSON)
+// ----------------------------------------------------------------------
+export async function importSpreadsheetFile(
+  file: File,
+  mode: 'MERGE' | 'OVERWRITE' = 'MERGE'
+): Promise<ImportResultSummary> {
+  const fileName = (file.name || '').toLowerCase();
+  const fileType = (file.type || '').toLowerCase();
+
+  // EXPLICIT JSON REJECTION: JSON files are strictly forbidden
+  if (
+    fileName.endsWith('.json') ||
+    fileType === 'application/json' ||
+    fileType.includes('json')
+  ) {
+    return {
+      success: false,
+      mode,
+      importedAt: new Date().toISOString(),
+      auditCounts: {
+        branches: 0,
+        serviceCatalog: 0,
+        rateOverrides: 0,
+        departmentCosts: 0,
+        monthlyCosts: 0,
+        dailyEntries: 0,
+        dialysisSlots: 0,
+      },
+      skippedSundaysCount: 0,
+      warnings: [],
+      errors: [
+        'JSON files are not accepted. Only .xlsx (Excel) or .csv (Comma-Separated Values) file formats are accepted for import.',
+      ],
+    };
+  }
+
+  // Validate supported extensions
+  const isXlsx = fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileType.includes('spreadsheetml');
+  const isCsv = fileName.endsWith('.csv') || fileType.includes('csv') || fileType === 'text/plain';
+
+  if (!isXlsx && !isCsv) {
+    return {
+      success: false,
+      mode,
+      importedAt: new Date().toISOString(),
+      auditCounts: {
+        branches: 0,
+        serviceCatalog: 0,
+        rateOverrides: 0,
+        departmentCosts: 0,
+        monthlyCosts: 0,
+        dailyEntries: 0,
+        dialysisSlots: 0,
+      },
+      skippedSundaysCount: 0,
+      warnings: [],
+      errors: [
+        `Unsupported file type (${file.name}). Please upload a valid .xlsx or .csv file.`,
+      ],
+    };
+  }
+
+  const arrayBuffer = await file.arrayBuffer();
+  let workbook: XLSX.WorkBook;
+  try {
+    workbook = XLSX.read(arrayBuffer, { cellDates: true, cellNF: false, cellText: false });
+  } catch (err: any) {
+    return {
+      success: false,
+      mode,
+      importedAt: new Date().toISOString(),
+      auditCounts: {
+        branches: 0,
+        serviceCatalog: 0,
+        rateOverrides: 0,
+        departmentCosts: 0,
+        monthlyCosts: 0,
+        dailyEntries: 0,
+        dialysisSlots: 0,
+      },
+      skippedSundaysCount: 0,
+      warnings: [],
+      errors: [`Failed to parse spreadsheet file: ${err.message || 'Corrupted or unsupported format'}`],
+    };
+  }
+
+  const sheetsData: Record<string, any[]> = {};
+
+  if (isCsv) {
+    // Single sheet in CSV: Auto-detect dataset by inspecting header column keys
+    const firstSheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[firstSheetName];
+    const rows: any[] = XLSX.utils.sheet_to_json(sheet);
+
+    if (rows.length === 0) {
+      return {
+        success: false,
+        mode,
+        importedAt: new Date().toISOString(),
+        auditCounts: {
+          branches: 0,
+          serviceCatalog: 0,
+          rateOverrides: 0,
+          departmentCosts: 0,
+          monthlyCosts: 0,
+          dailyEntries: 0,
+          dialysisSlots: 0,
+        },
+        skippedSundaysCount: 0,
+        warnings: [],
+        errors: ['The uploaded CSV file is empty.'],
+      };
+    }
+
+    const firstRowKeys = Object.keys(rows[0]).map((k) => k.toLowerCase());
+
+    if (firstRowKeys.some((k) => k.includes('machine') || k.includes('shift') || k.includes('slot'))) {
+      sheetsData['Dialysis_Slots'] = rows;
+    } else if (firstRowKeys.some((k) => k.includes('payout') || k.includes('share') || k.includes('consultation') || (k.includes('rate') && k.includes('service')))) {
+      sheetsData['RateCard_Consultation'] = rows;
+    } else if (firstRowKeys.some((k) => k.includes('lab') || k.includes('rent') || k.includes('staffing') || k.includes('electricity') || k.includes('consumables'))) {
+      sheetsData['Costs_Per_Lab'] = rows;
+    } else if (firstRowKeys.some((k) => k.includes('patient') || k.includes('revenue') || k.includes('encounter'))) {
+      sheetsData['Daily_Dept_Revenue'] = rows;
+    } else {
+      // Fallback: check filename hints
+      if (fileName.includes('dialysis') || fileName.includes('slot')) {
+        sheetsData['Dialysis_Slots'] = rows;
+      } else if (fileName.includes('rate') || fileName.includes('consult')) {
+        sheetsData['RateCard_Consultation'] = rows;
+      } else if (fileName.includes('cost') || fileName.includes('lab') || fileName.includes('opex')) {
+        sheetsData['Costs_Per_Lab'] = rows;
+      } else {
+        sheetsData['Daily_Dept_Revenue'] = rows;
+      }
+    }
+  } else {
+    // Standard Multi-Sheet XLSX
+    workbook.SheetNames.forEach((sheetName) => {
+      const sheet = workbook.Sheets[sheetName];
+      sheetsData[sheetName] = XLSX.utils.sheet_to_json(sheet);
+    });
+  }
+
+  return importParsedSpreadsheetData(sheetsData, mode);
+}
+
+// Backward-compatible alias for existing imports
+export const importExcelWorkbook = importSpreadsheetFile;
